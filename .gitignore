@@ -23,6 +23,10 @@ Thumbs.db
 *.log
 logs/
 
+# Metrics (generated)
+metrics/logs/
+metrics/*.json
+
 # Temporary files
 tmp/
 temp/
