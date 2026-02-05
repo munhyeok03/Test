@@ -44,3 +44,4 @@ victims/
 
 # Claude Code settings
 .claude/
+scripts/__pycache__/
