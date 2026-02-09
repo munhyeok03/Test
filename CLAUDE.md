@@ -119,6 +119,9 @@ cp .env.example .env
 | `--token-limit <n>` | 에이전트당 최대 토큰 수 | 무제한 |
 | `--call-limit <n>` | 에이전트당 최대 API 호출 수 | 무제한 |
 | `--cost-limit <n>` | 에이전트당 최대 비용 (USD) | 무제한 |
+| `--claude-model <model>` | Claude 모델 선택 | `claude-opus-4-5-20251101` |
+| `--codex-model <model>` | Codex 모델 선택 | `gpt-5.2-codex` |
+| `--gemini-model <model>` | Gemini 모델 선택 | `gemini-3-pro-preview` |
 
 ### 실행 제한 (Execution Limits)
 
@@ -327,9 +330,35 @@ results/{session}/analysis/
 
 ### 사용 모델
 
-| Agent | Model | 비고 |
-|-------|-------|------|
-| Claude | `claude-opus-4-5-20251101` | 모든 요청 Opus로 통일 (프록시 리다이렉트) |
+모델은 `--claude-model`, `--codex-model`, `--gemini-model` 옵션으로 선택할 수 있습니다:
+
+```bash
+# Claude를 Sonnet으로 실행
+./run.sh --prompt prompts/attack.txt --claude --claude-model claude-sonnet-4-20250514
+
+# Codex를 gpt-4o로 실행
+./run.sh --prompt prompts/attack.txt --codex --codex-model gpt-4o
+
+# 모든 에이전트를 저렴한 모델로 실행
+./run.sh --prompt prompts/attack.txt --all \
+    --claude-model claude-haiku-4-5-20251001 \
+    --codex-model gpt-4o-mini \
+    --gemini-model gemini-2.0-flash
+```
+
+**지원 모델:**
+
+| Provider | 모델 |
+|----------|------|
+| Claude (Anthropic) | `claude-opus-4-5-20251101`, `claude-sonnet-4-20250514`, `claude-haiku-4-5-20251001`, `claude-3-5-sonnet-20241022`, `claude-3-5-haiku-20241022` |
+| Codex (OpenAI) | `gpt-5.2-pro`, `gpt-5.2-codex`, `gpt-5.2-thinking`, `gpt-5.2`, `gpt-4o`, `gpt-4o-mini`, `o1-preview`, `o1-mini`, `o3-mini` |
+| Gemini (Google) | `gemini-3-pro-preview`, `gemini-2.5-pro`, `gemini-2.0-flash`, `gemini-1.5-pro`, `gemini-1.5-flash` |
+
+**기본값:**
+
+| Agent | Default Model | 비고 |
+|-------|---------------|------|
+| Claude | `claude-opus-4-5-20251101` | - |
 | Codex | `gpt-5.2-codex` | 조직 인증 필요 |
 | Gemini | `gemini-3-pro-preview` | - |
 
@@ -337,9 +366,9 @@ results/{session}/analysis/
 
 | Agent | 명령 |
 |-------|------|
-| Claude | `claude --model claude-opus-4-5-20251101 --print --dangerously-skip-permissions "$PROMPT"` |
-| Codex | `codex exec --model gpt-5.2-codex --yolo --skip-git-repo-check "$PROMPT"` |
-| Gemini | `gemini --model gemini-3-pro-preview -p "$PROMPT" --yolo` |
+| Claude | `claude --model $CLAUDE_MODEL --print --dangerously-skip-permissions "$PROMPT"` |
+| Codex | `codex exec --model $CODEX_MODEL --yolo --skip-git-repo-check "$PROMPT"` |
+| Gemini | `gemini --model $GEMINI_MODEL -p "$PROMPT" --yolo` |
 
 ### 포함 도구 (Kali Linux)
 
@@ -382,9 +411,6 @@ Docker BuildKit 캐시 문제. Dockerfile은 `COPY --chmod=755`를 사용하지�
 Your organization must be verified to generate reasoning summaries
 ```
 OpenAI 조직 인증 필요: https://platform.openai.com/settings/organization/general
-
-### Claude 모델 통일
-Claude Code CLI가 내부적으로 Haiku/Sonnet을 사용할 수 있으나, `metrics/litellm_config.yaml`에서 모든 요청을 Opus로 리다이렉트하도록 설정됨.
 
 ### 메트릭 미수집
 ```bash

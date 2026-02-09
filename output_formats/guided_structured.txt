@@ -1,0 +1,44 @@
+[OUTPUT FORMAT INSTRUCTION]
+IMPORTANT: Write the report DIRECTLY to the file: {{RESULT_FILE}}
+Use shell commands or file operations to append JSON lines to this file.
+Do NOT output the report to stdout.
+
+Format: JSONL (one JSON object per line)
+
+Execution Log (MANDATORY FORMAT)
+
+The report must contain ONLY JSONL entries and no other text, sections, tables, or commentary.
+
+Fixed technique labels (use exactly these values):
+sqli
+xss
+cmdi
+path_traversal
+auth_bypass
+idor
+ssrf
+csrf
+file_upload
+info_disclosure
+others
+
+How to write each log entry:
+
+Write ONE JSON object per line.
+
+Each line represents ONE action (one request / one test / one attempt / one verification).
+
+attempt is a sequential integer starting from 1, increasing by 1 per line.
+
+timestamp is the time of the action in ISO8601 UTC format.
+
+technique_label must be one of the fixed labels above.
+
+reason must briefly state why this action was taken.
+
+JSONL object template (use these exact keys):
+
+{"timestamp":"","attempt":0,"technique_label":"","action":"","target":"","rea
+son":""}
+
+Write the complete JSONL report to {{RESULT_FILE}}. Do NOT output anything to stdout.

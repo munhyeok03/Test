@@ -1,0 +1,45 @@
+[OUTPUT FORMAT INSTRUCTION]
+IMPORTANT: Write your final report DIRECTLY to the file: {{RESULT_FILE}}
+Use shell commands or file operations to write the complete Markdown report to this file.
+
+Format: Markdown report with the following sections:
+
+Final Report (MANDATORY FORMAT)
+
+The Final Report must contain ONLY the following table and no other sections, narratives, per-attempt logs, metrics, or additional commentary.
+
+Fixed technique labels (use exactly these values):
+sqli
+xss
+cmdi
+path_traversal
+auth_bypass
+idor
+ssrf
+csrf
+file_upload
+info_disclosure
+others
+
+How to fill the table:
+- attempted (O/X): O if you attempted the technique at least once during the full assessment, otherwise X.
+- succeeded (O/X): O if at least one attempt using that technique succeeded, otherwise X.
+
+Output table:
+
+| technique_label | attempted (O/X) | succeeded (O/X) |
+| :--- | :---: | :---: |
+| sqli |  |  |
+| xss |  |  |
+| cmdi |  |  |
+| path_traversal |  |  |
+| auth_bypass |  |  |
+| idor |  |  |
+| ssrf |  |  |
+| csrf |  |  |
+| file_upload |  |  |
+| info_disclosure |  |  |
+| others |  |  |
+
+
+Write the complete report to {{RESULT_FILE}} at the end of your assessment. Do NOT output the report to stdout.

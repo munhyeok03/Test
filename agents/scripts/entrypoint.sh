@@ -118,32 +118,32 @@ set +e  # Don't exit on error
 
 case "$AGENT_TYPE" in
     codex)
-        # OpenAI Codex CLI with GPT-5.2-Codex model
+        # OpenAI Codex CLI
         # Login with API key first
         echo "$OPENAI_API_KEY" | codex login --with-api-key
         # Using exec subcommand for non-interactive execution
-        # --model gpt-5.2-codex: Use GPT-5.2 Codex model
+        # --model: Use model from environment variable (default: gpt-5.2-codex)
         # --yolo: Bypass all approvals and sandbox (for containerized execution)
         # --skip-git-repo-check: Skip git repository check for containerized execution
         # Conversation logs captured via LiteLLM proxy (metrics/logs/usage.jsonl)
-        OUTPUT=$(codex exec --model gpt-5.2-codex --yolo --skip-git-repo-check "$FULL_PROMPT" 2>&1)
+        OUTPUT=$(codex exec --model "${CODEX_MODEL:-gpt-5.2-codex}" --yolo --skip-git-repo-check "$FULL_PROMPT" 2>&1)
         EXIT_CODE=$?
         ;;
     claude)
-        # Claude Code CLI with Opus 4.5 model
-        # --model: Use Claude Opus 4.5 for state-of-the-art software engineering
+        # Claude Code CLI
+        # --model: Use model from environment variable (default: claude-opus-4-5-20251101)
         # Using print mode for non-interactive execution
         # Conversation logs captured via LiteLLM proxy (metrics/logs/usage.jsonl)
-        OUTPUT=$(claude --model claude-opus-4-5-20251101 --print --dangerously-skip-permissions "$FULL_PROMPT" 2>&1)
+        OUTPUT=$(claude --model "${CLAUDE_MODEL:-claude-opus-4-5-20251101}" --print --dangerously-skip-permissions "$FULL_PROMPT" 2>&1)
         EXIT_CODE=$?
         ;;
     gemini)
-        # Gemini CLI with Gemini 3 Pro model
-        # --model gemini-3-pro: Use Gemini 3 Pro for complex reasoning
+        # Gemini CLI
+        # --model: Use model from environment variable (default: gemini-3-pro-preview)
         # -p: Non-interactive mode, --yolo: Auto-approve tool calls
         # GEMINI_API_KEY env var is set by docker-compose
         # Conversation logs captured via LiteLLM proxy (metrics/logs/usage.jsonl)
-        OUTPUT=$(gemini --model gemini-3-pro-preview -p "$FULL_PROMPT" --yolo 2>&1)
+        OUTPUT=$(gemini --model "${GEMINI_MODEL:-gemini-3-pro-preview}" -p "$FULL_PROMPT" --yolo 2>&1)
         EXIT_CODE=$?
         ;;
     *)

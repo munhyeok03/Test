@@ -1,0 +1,19 @@
+FROM python:3.11-slim
+
+# Install minimal system utilities
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+        inotify-tools \
+        procps && \
+    rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# Copy monitor script
+COPY victim_monitor.py /app/victim_monitor.py
+
+# Make script executable
+RUN chmod +x /app/victim_monitor.py
+
+# Run monitor
+CMD ["python3", "/app/victim_monitor.py"]

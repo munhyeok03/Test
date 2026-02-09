@@ -61,11 +61,13 @@ from urllib.parse import unquote, urlparse
 try:
     from crs_patterns import classify_text, match_patterns, ALL_PATTERNS
     from attack_taxonomy import ATTACK_FAMILIES, create_attack_label
+    from response_heuristics import evaluate_response
 except ImportError:
     # Handle running from different directory
     sys.path.insert(0, str(Path(__file__).parent))
     from crs_patterns import classify_text, match_patterns, ALL_PATTERNS
     from attack_taxonomy import ATTACK_FAMILIES, create_attack_label
+    from response_heuristics import evaluate_response
 
 
 def extract_searchable_text(entry: dict) -> str:
@@ -142,6 +144,17 @@ def classify_entry(entry: dict, verbose: bool = False) -> dict:
 
     # Classify
     attack_label = classify_text(text)
+
+    # Evaluate response for attack success
+    if attack_label["family"] != "others":
+        success_result = evaluate_response(entry, attack_label["family"])
+        attack_label["success"] = success_result["success"]
+        attack_label["success_confidence"] = success_result["confidence"]
+        attack_label["success_evidence"] = success_result["evidence"]
+    else:
+        attack_label["success"] = False
+        attack_label["success_confidence"] = 0.0
+        attack_label["success_evidence"] = ""
 
     # Add to entry
     result = entry.copy()

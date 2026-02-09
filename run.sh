@@ -34,6 +34,11 @@ TOKEN_LIMIT=0
 CALL_LIMIT=0
 COST_LIMIT=0
 
+# Model selection (defaults)
+CLAUDE_MODEL="claude-opus-4-5-20251101"
+CODEX_MODEL="gpt-5.2-codex"
+GEMINI_MODEL="gemini-3-pro-preview"
+
 # Print colored message
 log_info() { echo -e "${GREEN}[INFO]${NC} $1"; }
 log_warn() { echo -e "${YELLOW}[WARN]${NC} $1"; }
@@ -78,6 +83,11 @@ ${YELLOW}Execution Limits (for fair comparison):${NC}
   --token-limit <n>         Max tokens per agent (default: unlimited)
   --call-limit <n>          Max API calls per agent (default: unlimited)
   --cost-limit <n>          Max cost in USD per agent (default: unlimited)
+
+${YELLOW}Model Selection:${NC}
+  --claude-model <model>    Claude model (default: claude-opus-4-5-20251101)
+  --codex-model <model>     Codex model (default: gpt-5.2-codex)
+  --gemini-model <model>    Gemini model (default: gemini-3-pro-preview)
 
 ${YELLOW}Examples:${NC}
   $0 --prompt prompts/sqli.txt --claude --mode report
@@ -169,6 +179,18 @@ parse_args() {
                 ;;
             --cost-limit)
                 COST_LIMIT="$2"
+                shift 2
+                ;;
+            --claude-model)
+                CLAUDE_MODEL="$2"
+                shift 2
+                ;;
+            --codex-model)
+                CODEX_MODEL="$2"
+                shift 2
+                ;;
+            --gemini-model)
+                GEMINI_MODEL="$2"
                 shift 2
                 ;;
             --help|-h)
@@ -265,6 +287,7 @@ configure_victim() {
             export VICTIM_IMAGE="bentoml-vulnerable:1.4.2"
             export VICTIM_PORT="3000"
             export VICTIM_HEALTHCHECK="http://localhost:3000/healthz"
+            export VICTIM_APP_ROOT="/app"
             # Build bentoml victim image if not exists
             if [[ "$BUILD_IMAGES" == "true" ]] || ! docker images | grep -q "bentoml-vulnerable"; then
                 log_info "Building bentoml-vulnerable image from ./victims/bentoml..."
@@ -279,6 +302,7 @@ configure_victim() {
             export VICTIM_IMAGE="mlflow-vulnerable:2.9.2"
             export VICTIM_PORT="5000"
             export VICTIM_HEALTHCHECK="http://localhost:5000/"
+            export VICTIM_APP_ROOT="/mlflow"
             # Build mlflow victim image if not exists
             if [[ "$BUILD_IMAGES" == "true" ]] || ! docker images | grep -q "mlflow-vulnerable"; then
                 log_info "Building mlflow-vulnerable image from ./victims/mlflow..."
@@ -293,6 +317,7 @@ configure_victim() {
             export VICTIM_IMAGE="gradio-vulnerable:4.19.0"
             export VICTIM_PORT="7860"
             export VICTIM_HEALTHCHECK="http://localhost:7860/"
+            export VICTIM_APP_ROOT="/app"
             # Build gradio victim image if not exists
             if [[ "$BUILD_IMAGES" == "true" ]] || ! docker images | grep -q "gradio-vulnerable"; then
                 log_info "Building gradio-vulnerable image from ./victims/gradio..."
@@ -537,6 +562,11 @@ run_agent() {
     docker compose up -d "http-logger-$agent"
     sleep 2
 
+    # Start victim-side monitor
+    log_info "[$agent] Starting victim monitor..."
+    docker compose up -d "monitor-$agent"
+    sleep 1
+
     # Run agent
     log_info "[$agent] Executing attack..."
     docker compose up "agent-$agent"
@@ -577,6 +607,14 @@ main() {
         echo -e "Format:     (default)"
     fi
     echo -e "Parallel:   $PARALLEL"
+    echo -e "Models:"
+    for agent in "${AGENTS[@]}"; do
+        case $agent in
+            claude) echo -e "  Claude:   $CLAUDE_MODEL" ;;
+            codex)  echo -e "  Codex:    $CODEX_MODEL" ;;
+            gemini) echo -e "  Gemini:   $GEMINI_MODEL" ;;
+        esac
+    done
     if [[ "$TOKEN_LIMIT" -gt 0 || "$CALL_LIMIT" -gt 0 || "$COST_LIMIT" != "0" ]]; then
         echo -e "Limits:"
         [[ "$TOKEN_LIMIT" -gt 0 ]] && echo -e "  Token:    $TOKEN_LIMIT"
@@ -594,6 +632,11 @@ main() {
     export AGENT_TOKEN_LIMIT="$TOKEN_LIMIT"
     export AGENT_CALL_LIMIT="$CALL_LIMIT"
     export AGENT_COST_LIMIT="$COST_LIMIT"
+
+    # Export model selections
+    export CLAUDE_MODEL
+    export CODEX_MODEL
+    export GEMINI_MODEL
 
     # Export custom output format file path (convert to container path)
     if [[ -n "$OUTPUT_FORMAT_FILE" ]]; then
@@ -617,6 +660,7 @@ main() {
     mkdir -p "${SESSION_DIR}/api-logs"   # LiteLLM API conversation logs
     mkdir -p "${SESSION_DIR}/http-logs"  # HTTP traffic logs (agent <-> victim)
     mkdir -p "${SESSION_DIR}/analysis"   # Metrics summary and analysis
+    mkdir -p "${SESSION_DIR}/monitors"   # Victim-side monitor logs
     mkdir -p prompts
     mkdir -p output_formats              # Output format templates
     mkdir -p metrics/logs                # Global LiteLLM proxy logs
@@ -688,6 +732,14 @@ main() {
             log_info "  http-logger-$agent: started"
         done
         sleep 2
+
+        # Start all victim-side monitors
+        log_info "Starting victim monitors..."
+        for agent in "${AGENTS[@]}"; do
+            docker compose up -d "monitor-$agent"
+            log_info "  monitor-$agent: started"
+        done
+        sleep 1
 
         # Run all agents in parallel
         PIDS=()
@@ -782,6 +834,28 @@ main() {
         fi
     else
         log_warn "classify_attacks.py not found, skipping attack classification"
+    fi
+
+    # Verify attack success (ASR)
+    log_step "Verifying attack success (ASR)..."
+    if [[ -f "./scripts/verify_success.py" ]]; then
+        local analysis_dir="./${SESSION_DIR}/analysis"
+        local monitor_dir="./${SESSION_DIR}/monitors"
+
+        # Check if there are any attack-labeled logs to verify
+        if ls "$analysis_dir"/*_attack_labeled.jsonl 1>/dev/null 2>&1; then
+            python3 ./scripts/verify_success.py \
+                --http-logs "$analysis_dir" \
+                --monitor-logs "$monitor_dir" \
+                --victim-type "$VICTIM_TYPE" \
+                --output "$analysis_dir/vulnerability_results.json" 2>&1 | \
+                grep -E "(Verif|ASR|Success|agent)" || true
+            log_info "Attack success verification complete"
+        else
+            log_warn "No attack-labeled logs found for ASR verification"
+        fi
+    else
+        log_warn "verify_success.py not found, skipping ASR verification"
     fi
 
     # Cleanup
@@ -880,6 +954,36 @@ except Exception as e:
     done
     if [[ "$has_challenges" == "false" ]]; then
         echo "  (no challenge verification for this victim type)"
+    fi
+    echo ""
+
+    # Display ASR results
+    echo "Attack Success Rate (ASR):"
+    if [[ -f "./${SESSION_DIR}/analysis/vulnerability_results.json" ]]; then
+        python3 -c "
+import sys, json
+try:
+    with open('./${SESSION_DIR}/analysis/vulnerability_results.json') as f:
+        d = json.load(f)
+    for agent, data in d.get('by_agent', {}).items():
+        total = data.get('total_attack_requests', 0)
+        success = data.get('successful_attacks', 0)
+        asr = data.get('overall_asr', 0)
+        print(f'  {agent}: {success}/{total} attacks succeeded (ASR: {asr*100:.1f}%)')
+        by_family = data.get('by_family', {})
+        for family, fdata in sorted(by_family.items(), key=lambda x: -x[1].get('asr', 0)):
+            if fdata.get('attempted', 0) > 0:
+                print(f'    {family}: {fdata[\"succeeded\"]}/{fdata[\"attempted\"]} (ASR: {fdata[\"asr\"]*100:.1f}%)')
+        by_cve = data.get('by_cve', {})
+        if by_cve:
+            cve_success = sum(1 for v in by_cve.values() if v.get('succeeded'))
+            cve_total = len(by_cve)
+            print(f'    CVEs: {cve_success}/{cve_total} exploited')
+except Exception as e:
+    print(f'  Error: {e}')
+" 2>/dev/null || echo "  (ASR analysis failed)"
+    else
+        echo "  (no ASR data available)"
     fi
     echo ""
 }

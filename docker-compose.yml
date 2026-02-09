@@ -52,6 +52,72 @@ services:
       - "4000:4000"  # Debug access (optional)
 
   # ===========================================
+  # VICTIM-SIDE MONITORS (Impact Detection)
+  # ===========================================
+  monitor-codex:
+    build:
+      context: ./metrics
+      dockerfile: Dockerfile.monitor
+    container_name: monitor-codex
+    pid: "service:victim-codex"
+    environment:
+      - AGENT_NAME=codex
+      - LOG_DIR=/logs
+      - APP_ROOT=${VICTIM_APP_ROOT:-/app}
+      - POLL_INTERVAL=0.25
+      - STARTUP_GRACE_PERIOD=30
+    volumes:
+      - ./results/${SESSION_TIMESTAMP}/monitors:/logs
+    networks:
+      - net-codex
+    depends_on:
+      - victim-codex
+    cap_add:
+      - SYS_PTRACE
+
+  monitor-claude:
+    build:
+      context: ./metrics
+      dockerfile: Dockerfile.monitor
+    container_name: monitor-claude
+    pid: "service:victim-claude"
+    environment:
+      - AGENT_NAME=claude
+      - LOG_DIR=/logs
+      - APP_ROOT=${VICTIM_APP_ROOT:-/app}
+      - POLL_INTERVAL=0.25
+      - STARTUP_GRACE_PERIOD=30
+    volumes:
+      - ./results/${SESSION_TIMESTAMP}/monitors:/logs
+    networks:
+      - net-claude
+    depends_on:
+      - victim-claude
+    cap_add:
+      - SYS_PTRACE
+
+  monitor-gemini:
+    build:
+      context: ./metrics
+      dockerfile: Dockerfile.monitor
+    container_name: monitor-gemini
+    pid: "service:victim-gemini"
+    environment:
+      - AGENT_NAME=gemini
+      - LOG_DIR=/logs
+      - APP_ROOT=${VICTIM_APP_ROOT:-/app}
+      - POLL_INTERVAL=0.25
+      - STARTUP_GRACE_PERIOD=30
+    volumes:
+      - ./results/${SESSION_TIMESTAMP}/monitors:/logs
+    networks:
+      - net-gemini
+    depends_on:
+      - victim-gemini
+    cap_add:
+      - SYS_PTRACE
+
+  # ===========================================
   # CODEX ENVIRONMENT (Isolated)
   # ===========================================
   victim-codex:
@@ -89,6 +155,7 @@ services:
       - OPENAI_API_KEY=${OPENAI_API_KEY}
       - OPENAI_BASE_URL=http://metrics-proxy:4000
       - AGENT_TYPE=codex
+      - CODEX_MODEL=${CODEX_MODEL:-gpt-5.2-codex}
       - OUTPUT_MODE=${OUTPUT_MODE:-report}
       - OUTPUT_FORMAT_FILE=${OUTPUT_FORMAT_FILE:-}
       - SESSION_TIMESTAMP=${SESSION_TIMESTAMP}
@@ -141,6 +208,7 @@ services:
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
       - ANTHROPIC_BASE_URL=http://metrics-proxy:4000
       - AGENT_TYPE=claude
+      - CLAUDE_MODEL=${CLAUDE_MODEL:-claude-opus-4-5-20251101}
       - OUTPUT_MODE=${OUTPUT_MODE:-report}
       - OUTPUT_FORMAT_FILE=${OUTPUT_FORMAT_FILE:-}
       - SESSION_TIMESTAMP=${SESSION_TIMESTAMP}
@@ -193,6 +261,7 @@ services:
       - GEMINI_API_KEY=${GOOGLE_API_KEY}
       - GOOGLE_GEMINI_BASE_URL=http://metrics-proxy:4000
       - AGENT_TYPE=gemini
+      - GEMINI_MODEL=${GEMINI_MODEL:-gemini-3-pro-preview}
       - OUTPUT_MODE=${OUTPUT_MODE:-report}
       - OUTPUT_FORMAT_FILE=${OUTPUT_FORMAT_FILE:-}
       - SESSION_TIMESTAMP=${SESSION_TIMESTAMP}

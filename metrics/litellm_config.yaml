@@ -3,34 +3,109 @@
 # Routes API calls through proxy for unified metrics collection
 
 model_list:
+  # ===========================================
   # Claude 모델 (Anthropic)
+  # ===========================================
   - model_name: claude-opus-4-5-20251101
     litellm_params:
       model: claude-opus-4-5-20251101
       api_key: os.environ/ANTHROPIC_API_KEY
 
-  # Haiku 요청을 Opus로 리다이렉트 (Opus만 사용하도록 강제)
-  - model_name: claude-haiku-4-5-20251001
-    litellm_params:
-      model: claude-opus-4-5-20251101
-      api_key: os.environ/ANTHROPIC_API_KEY
-
-  # Sonnet 요청도 Opus로 리다이렉트 (Opus만 사용하도록 강제)
   - model_name: claude-sonnet-4-20250514
     litellm_params:
-      model: claude-opus-4-5-20251101
+      model: claude-sonnet-4-20250514
       api_key: os.environ/ANTHROPIC_API_KEY
 
-  # Codex 모델 (OpenAI)
+  - model_name: claude-haiku-4-5-20251001
+    litellm_params:
+      model: claude-haiku-4-5-20251001
+      api_key: os.environ/ANTHROPIC_API_KEY
+
+  # Legacy Claude 3.5 models
+  - model_name: claude-3-5-sonnet-20241022
+    litellm_params:
+      model: claude-3-5-sonnet-20241022
+      api_key: os.environ/ANTHROPIC_API_KEY
+
+  - model_name: claude-3-5-haiku-20241022
+    litellm_params:
+      model: claude-3-5-haiku-20241022
+      api_key: os.environ/ANTHROPIC_API_KEY
+
+  # ===========================================
+  # OpenAI 모델
+  # ===========================================
   - model_name: gpt-5.2-codex
     litellm_params:
       model: gpt-5.2-codex
       api_key: os.environ/OPENAI_API_KEY
 
+  - model_name: gpt-5.2-pro
+    litellm_params:
+      model: gpt-5.2-pro
+      api_key: os.environ/OPENAI_API_KEY
+
+  - model_name: gpt-5.2-thinking
+    litellm_params:
+      model: gpt-5.2-thinking
+      api_key: os.environ/OPENAI_API_KEY
+
+  - model_name: gpt-5.2
+    litellm_params:
+      model: gpt-5.2
+      api_key: os.environ/OPENAI_API_KEY
+
+  - model_name: gpt-4o
+    litellm_params:
+      model: gpt-4o
+      api_key: os.environ/OPENAI_API_KEY
+
+  - model_name: gpt-4o-mini
+    litellm_params:
+      model: gpt-4o-mini
+      api_key: os.environ/OPENAI_API_KEY
+
+  - model_name: o1-preview
+    litellm_params:
+      model: o1-preview
+      api_key: os.environ/OPENAI_API_KEY
+
+  - model_name: o1-mini
+    litellm_params:
+      model: o1-mini
+      api_key: os.environ/OPENAI_API_KEY
+
+  - model_name: o3-mini
+    litellm_params:
+      model: o3-mini
+      api_key: os.environ/OPENAI_API_KEY
+
+  # ===========================================
   # Gemini 모델 (Google)
+  # ===========================================
   - model_name: gemini-3-pro-preview
     litellm_params:
       model: gemini/gemini-3-pro-preview
+      api_key: os.environ/GOOGLE_API_KEY
+
+  - model_name: gemini-2.5-pro
+    litellm_params:
+      model: gemini/gemini-2.5-pro
+      api_key: os.environ/GOOGLE_API_KEY
+
+  - model_name: gemini-2.0-flash
+    litellm_params:
+      model: gemini/gemini-2.0-flash
+      api_key: os.environ/GOOGLE_API_KEY
+
+  - model_name: gemini-1.5-pro
+    litellm_params:
+      model: gemini/gemini-1.5-pro
+      api_key: os.environ/GOOGLE_API_KEY
+
+  - model_name: gemini-1.5-flash
+    litellm_params:
+      model: gemini/gemini-1.5-flash
       api_key: os.environ/GOOGLE_API_KEY
 
 litellm_settings:
