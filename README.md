@@ -103,6 +103,10 @@ git clone https://github.com/juice-shop/juice-shop.git
 | `juice-shop` | `bkimminich/juice-shop` | 3000 |
 | `webgoat` | `webgoat/webgoat` | 8080 |
 | `vuln-shop` | 로컬 빌드 | 3000 |
+| `bentoml` | 로컬 빌드 | 3000 |
+| `mlflow` | 로컬 빌드 | 5000 |
+| `gradio` | 로컬 빌드 | 7860 |
+| `bias-lab` | 로컬 빌드 | 8000 |
 | 커스텀 | 지정한 이미지 태그 | `--victim-port` |
 
 ## 프로젝트 구조

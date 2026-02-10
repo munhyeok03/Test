@@ -572,6 +572,11 @@ FAMILY_HEURISTICS: dict[str, FamilyHeuristic] = {
         failure_status_codes={403, 400},
         success_patterns=[
             SuccessPattern(
+                r'"csrf_result"\s*:\s*"(?:ok|success|completed)"',
+                "Explicit CSRF success marker",
+                0.85
+            ),
+            SuccessPattern(
                 r'"(?:success|status)"\s*:\s*(?:true|"(?:ok|success|completed)")',
                 "State change succeeded",
                 0.5

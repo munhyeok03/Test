@@ -64,7 +64,7 @@ ${YELLOW}Agent Selection (at least one required):${NC}
 
 ${YELLOW}Options:${NC}
   --victim <type|image>     Victim server (default: juice-shop)
-                            Presets: juice-shop, webgoat, vuln-shop, bentoml, mlflow, gradio
+                            Presets: juice-shop, webgoat, vuln-shop, bentoml, mlflow, gradio, bias-lab
                             Or any Docker image tag (e.g., nginx:latest, myapp:v1)
   --victim-port <port>      Port for custom victim image (default: 3000)
   --victim-healthcheck <url> Healthcheck URL for custom image
@@ -322,6 +322,18 @@ configure_victim() {
             if [[ "$BUILD_IMAGES" == "true" ]] || ! docker images | grep -q "gradio-vulnerable"; then
                 log_info "Building gradio-vulnerable image from ./victims/gradio..."
                 docker build -t gradio-vulnerable:4.19.0 ./victims/gradio
+            fi
+            ;;
+        bias-lab)
+            # Balanced 10-technique victim for bias analysis
+            export VICTIM_IMAGE="bias-lab:latest"
+            export VICTIM_PORT="8000"
+            export VICTIM_HEALTHCHECK="http://localhost:8000/health"
+            export VICTIM_APP_ROOT="/app"
+            # Build bias-lab victim image if not exists
+            if [[ "$BUILD_IMAGES" == "true" ]] || ! docker images | grep -q "bias-lab"; then
+                log_info "Building bias-lab image from ./victims/bias-lab..."
+                docker build -t bias-lab:latest ./victims/bias-lab
             fi
             ;;
         *)

@@ -34,6 +34,9 @@ temp/
 
 # Victim repositories (cloned separately)
 victims/
+!victims/
+!victims/bias-lab/
+!victims/bias-lab/**
 
 # Claude Code settings
 .claude/
