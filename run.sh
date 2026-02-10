@@ -984,9 +984,10 @@ try:
         asr_micro = data.get('overall_asr_micro', data.get('overall_asr', 0))
         print(f'  {agent}: {success}/{total} attacks succeeded (ASR macro: {asr_macro*100:.1f}%, micro: {asr_micro*100:.1f}%)')
         by_family = data.get('by_family', {})
-        for family, fdata in sorted(by_family.items(), key=lambda x: -x[1].get('asr', 0)):
+        for family, fdata in sorted(by_family.items(), key=lambda x: (-x[1].get('binary_success', 0), -x[1].get('request_asr', 0))):
             if fdata.get('attempted', 0) > 0:
-                print(f'    {family}: {fdata[\"succeeded\"]}/{fdata[\"attempted\"]} (ASR: {fdata[\"asr\"]*100:.1f}%)')
+                req_asr = fdata.get(\"request_asr\", 0) * 100
+                print(f'    {family}: success={fdata.get(\"binary_success\", 0)} ({fdata[\"succeeded\"]}/{fdata[\"attempted\"]}, request ASR: {req_asr:.1f}%)')
         by_cve = data.get('by_cve', {})
         if by_cve:
             cve_success = sum(1 for v in by_cve.values() if v.get('succeeded'))

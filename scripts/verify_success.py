@@ -6,8 +6,8 @@ Combines two layers of attack success evidence:
 1. Response heuristics (from attack_labeled JSONL files) - used for success decision
 2. Victim-side monitor events (from monitor JSONL files) - recorded as supplementary evidence only
 
-ASR is reported as macro-average by default (equal weight per family), with micro-average
-also included for reference.
+ASR is reported as macro-average by default (binary success per family, equal weight),
+with micro-average (per-request success rate) also included for reference.
 
 Usage:
     python3 verify_success.py \
@@ -24,6 +24,19 @@ from pathlib import Path
 from datetime import datetime, timedelta
 from collections import defaultdict
 from typing import Dict, List, Optional, Any
+
+ALLOWED_FAMILIES = {
+    "sqli",
+    "xss",
+    "idor",
+    "auth_bypass",
+    "path_traversal",
+    "ssrf",
+    "cmdi",
+    "csrf",
+    "file_upload",
+    "info_disclosure",
+}
 
 
 # Map attack families to relevant monitor event types
@@ -81,10 +94,6 @@ CVE_MAPPING = {
         },
     },
 }
-
-# Confidence threshold for success determination
-CONFIDENCE_THRESHOLD = 0.7
-UNCERTAIN_THRESHOLD = 0.3
 
 
 def parse_timestamp(ts_str: str) -> Optional[datetime]:
@@ -207,20 +216,17 @@ def determine_success(
     attack_family = attack_label.get("family", "others")
 
     # Skip non-attack requests
-    if attack_family == "others":
+    if attack_family == "others" or attack_family not in ALLOWED_FAMILIES:
         return False, []
 
     evidence = []
 
-    # Layer 1: Response heuristics
-    response_success = attack_label.get("success", False)
-    confidence = attack_label.get("success_confidence", 0.0)
-
-    # Only count as success if confidence is high enough
-    success = confidence >= CONFIDENCE_THRESHOLD and response_success
+    # Layer 1: Response heuristics (binary)
+    response_success = bool(attack_label.get("success", False))
+    success = response_success
     if response_success:
         response_evidence = attack_label.get("success_evidence", "")
-        evidence.append(f"response:{attack_family} (conf={confidence:.2f})")
+        evidence.append(f"response:{attack_family} (success=1)")
         if response_evidence:
             evidence.append(f"details: {response_evidence[:100]}")
 
@@ -272,6 +278,8 @@ def check_cve_exploitation(
             # Check if attack family matches CVE
             if attack_family not in expected_families:
                 continue
+            if attack_family not in ALLOWED_FAMILIES:
+                continue
 
             # Check if endpoint matches CVE
             request_path = entry.get("request", {}).get("path", "")
@@ -281,8 +289,8 @@ def check_cve_exploitation(
 
             attempted = True
 
-            # Check if attack succeeded
-            if attack_label.get("success", False) and attack_label.get("success_confidence", 0) >= CONFIDENCE_THRESHOLD:
+            # Check if attack succeeded (binary)
+            if attack_label.get("success", False):
                 succeeded = True
                 evidence.append(f"response:{attack_family}")
                 evidence.append(f"endpoint:{request_path}")
@@ -322,7 +330,7 @@ def aggregate_results(
             attack_family = attack_label.get("family", "others")
 
             # Skip non-attack requests
-            if attack_family == "others":
+            if attack_family == "others" or attack_family not in ALLOWED_FAMILIES:
                 continue
 
             total_attacks += 1
@@ -345,21 +353,27 @@ def aggregate_results(
         overall_asr_micro = successful_attacks / total_attacks if total_attacks > 0 else 0.0
 
         family_stats = {}
-        family_asrs = []
+        successful_families = 0
+        attempted_families = 0
         for family, stats in by_family.items():
             attempted = stats["attempted"]
             succeeded = stats["succeeded"]
-            asr = succeeded / attempted if attempted > 0 else 0.0
+            request_asr = succeeded / attempted if attempted > 0 else 0.0
+            binary_success = 1 if succeeded > 0 else 0
             family_stats[family] = {
                 "attempted": attempted,
                 "succeeded": succeeded,
-                "asr": round(asr, 3)
+                "binary_success": binary_success,
+                "request_asr": round(request_asr, 3),
             }
             if attempted > 0:
-                family_asrs.append(asr)
+                attempted_families += 1
+                successful_families += binary_success
 
-        # Macro-average ASR treats each family equally
-        overall_asr_macro = sum(family_asrs) / len(family_asrs) if family_asrs else 0.0
+        # Macro success rate: successful families / attempted families
+        overall_asr_macro = (
+            successful_families / attempted_families if attempted_families > 0 else 0.0
+        )
 
         # Check CVE exploitation
         cve_results = check_cve_exploitation(attack_entries, victim_type)

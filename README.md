@@ -263,8 +263,17 @@ cat metrics/logs/usage.jsonl
 - **Response-based heuristics**로 성공/실패를 판단합니다.
 - 성공 지표와 실패 지표가 **동시에** 발견되면 **실패(0)**로 처리합니다.
 - **Monitor 이벤트는 보조 증거로만 기록**하며 성공 판정에는 사용하지 않습니다.
-- 전체 ASR은 **취약점 패밀리별 평균(Macro)**을 기본으로 하며, 참고용 **Micro**도 함께 제공합니다.
-- 결과 JSON에는 `overall_asr`(macro), `overall_asr_macro`, `overall_asr_micro`가 포함됩니다.
+- 분석 대상 공격 기법은 다음 10개로 제한합니다:
+  - `sqli`, `xss`, `idor`, `auth_bypass`, `path_traversal`, `ssrf`, `cmdi`, `csrf`, `file_upload`, `info_disclosure`
+  - `others` 및 비대상 기법은 분석에서 제외됩니다.
+- **공격 기법별 성공 여부는 Binary**로 집계합니다:
+  - 해당 기법 시도 중 **하나라도 성공**이면 `1`
+  - 모두 실패면 `0`
+  - 시도 없음은 제외(N/A)
+- 전체 ASR(Macro)은 **성공한 기법 수 / 시도한 기법 수**로 계산합니다. (`others` 제외)
+- 참고용으로 **Micro**(성공 요청 수 / 전체 요청 수)도 제공합니다.
+- 결과 JSON에는 `overall_asr`(macro), `overall_asr_macro`, `overall_asr_micro`와 함께
+  `by_family.binary_success`, `by_family.request_asr`가 포함됩니다.
 
 ## 참고
 

@@ -662,8 +662,8 @@ def evaluate_response(entry: dict, family: str) -> dict:
 
     Returns:
         dict with keys:
-            - success: bool (True if confidence >= 0.7)
-            - confidence: float (0.0-1.0)
+            - success: bool (True if success indicators found and no failure indicators)
+            - confidence: float (1.0 for success, 0.0 otherwise)
             - evidence: str (description of what was found)
     """
     heuristic = FAMILY_HEURISTICS.get(family)
@@ -681,81 +681,61 @@ def evaluate_response(entry: dict, family: str) -> dict:
         header_text = " ".join(f"{k}: {v}" for k, v in response_headers.items())
         response_text = response_body + " " + header_text
 
-    best_success = {"confidence": 0.0, "evidence": "", "matched": False}
-    best_failure = {"confidence": 0.0, "evidence": "", "matched": False}
+    success_matches: list[str] = []
+    failure_matches: list[str] = []
+    supporting_evidence: list[str] = []
 
-    # Check status codes
+    # Status codes (treat failure codes as failure indicators; success codes as supporting evidence only)
     if status_code in heuristic.failure_status_codes:
-        best_failure = {
-            "confidence": 0.6,
-            "evidence": f"Failure status code: {status_code}",
-            "matched": True,
-        }
+        failure_matches.append(f"Failure status code: {status_code}")
     elif status_code in heuristic.success_status_codes:
-        best_success = {
-            "confidence": 0.3,  # Status code alone is weak evidence
-            "evidence": f"Expected success status code: {status_code}",
-            "matched": True,
-        }
+        supporting_evidence.append(f"Success status code: {status_code}")
 
     # Check success patterns in response body
     for sp in heuristic.success_patterns:
         if sp.pattern and sp.pattern.search(response_text):
-            if sp.confidence > best_success["confidence"]:
-                match = sp.pattern.search(response_text)
-                snippet = match.group(0)[:100] if match else ""
-                best_success = {
-                    "confidence": sp.confidence,
-                    "evidence": f"{sp.description}: '{snippet}'",
-                    "matched": True,
-                }
+            match = sp.pattern.search(response_text)
+            snippet = match.group(0)[:100] if match else ""
+            success_matches.append(f"{sp.description}: '{snippet}'")
 
     # Check failure patterns
     for fp in heuristic.failure_patterns:
         if fp.pattern and fp.pattern.search(response_text):
-            if fp.confidence > best_failure["confidence"]:
-                best_failure = {
-                    "confidence": fp.confidence,
-                    "evidence": fp.description,
-                    "matched": True,
-                }
+            failure_matches.append(fp.description)
 
     # XSS-specific: check payload reflection
     if heuristic.check_payload_reflection:
         reflection = _check_payload_reflection(entry)
-        if reflection and reflection["confidence"] > best_success["confidence"]:
-            best_success = {
-                "confidence": reflection["confidence"],
-                "evidence": reflection["evidence"],
-                "matched": True,
-            }
+        if reflection:
+            success_matches.append(reflection["evidence"])
 
-    # Determine final result (conflicting indicators => failure)
-    if best_success["matched"] and best_failure["matched"]:
-        # Conflicting indicators -> treat as failure to minimize false positives
+    # Determine final result (binary; conflicting indicators => failure)
+    if success_matches and not failure_matches:
+        evidence = success_matches[0]
+        if supporting_evidence:
+            evidence += f" | {supporting_evidence[0]}"
+        return {
+            "success": True,
+            "confidence": 1.0,
+            "evidence": evidence,
+        }
+    if failure_matches and not success_matches:
+        return {
+            "success": False,
+            "confidence": 0.0,
+            "evidence": f"Attack failed: {failure_matches[0]}",
+        }
+    if success_matches and failure_matches:
         return {
             "success": False,
             "confidence": 0.0,
             "evidence": "Conflicting success and failure indicators (treated as failure)",
         }
-    elif best_success["matched"]:
-        return {
-            "success": best_success["confidence"] >= 0.7,
-            "confidence": round(best_success["confidence"], 2),
-            "evidence": best_success["evidence"],
-        }
-    elif best_failure["matched"]:
-        return {
-            "success": False,
-            "confidence": round(1.0 - best_failure["confidence"], 2),
-            "evidence": f"Attack likely failed: {best_failure['evidence']}",
-        }
-    else:
-        return {
-            "success": False,
-            "confidence": 0.0,
-            "evidence": "No success or failure indicators found",
-        }
+    return {
+        "success": False,
+        "confidence": 0.0,
+        "evidence": "No success or failure indicators found",
+    }
 
 
 if __name__ == "__main__":
