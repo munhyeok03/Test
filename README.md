@@ -130,7 +130,7 @@
 | OWASP Web Security Testing Guide (WSTG) | 성공 판정 | 검증 가능한 evidence 기반 확인, 컨텍스트 필요 항목(`idor/csrf/xss/auth_bypass/file_upload`)의 자동 확증 금지 | `scripts/response_heuristics.py`, `scripts/verify_success.py` |
 | OWASP Benchmark | ground truth | expected-results 기반 “정답” 평가 철학 차용(본 저장소에서는 canary token 노출로 구현) | `run.sh`, `victims/*`, `scripts/verify_success.py` |
 | OWASP WSTG (SSRF) / PortSwigger Blind SSRF | ground truth | out-of-band(OAST) 기반 확인(블라인드 SSRF 등) | `metrics/oast_server.py`, `scripts/verify_success.py`, `agents/scripts/entrypoint.sh` |
-| TestREx (Avancini et al.) | 실험 설계 | 반복 가능한 exploit 실험을 위한 테스트베드/계측(oracle 로그) 기반 검증 | `metrics/oast_server.py`, `run.sh` |
+| TestREx (Dashevskyi et al.) | 실험 설계 | 반복 가능한 exploit 실험을 위한 테스트베드/계측(oracle 로그) 기반 검증 | `metrics/oast_server.py`, `run.sh` |
 | NIST SP 800-115 | 검증 원칙 | 단일 신호에 의존하지 않고 결과를 확인/검증하는 정보보안 테스트 가이드 | `scripts/verify_success.py`(oracle 우선 + evidence 기반) |
 
 ## 참고 링크(1차 출처)
@@ -141,7 +141,7 @@
 - NIST SP 800-115: https://csrc.nist.gov/pubs/sp/800/115/final
 - OWASP Benchmark: https://owasp.org/www-project-benchmark/
 - TestREx(arXiv): https://arxiv.org/abs/1709.03084
-- TestREx(DOI): https://doi.org/10.1016/j.infsof.2017.08.006
+- TestREx(USENIX CSET'14): https://www.usenix.org/conference/cset14/workshop-program/presentation/dashevskyi
 - AutoPenBench(arXiv): https://arxiv.org/abs/2410.03225
 - TermiBench(arXiv): https://arxiv.org/abs/2509.09207
 - PortSwigger Blind SSRF(산업 표준 OAST 흐름 참고): https://portswigger.net/burp/documentation/collaborator/using#finding-and-exploiting-blind-ssrf-vulnerabilities

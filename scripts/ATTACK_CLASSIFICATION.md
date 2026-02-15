@@ -228,16 +228,16 @@ python3 classify_attacks.py input.jsonl --stats-only
 
 ### Academic References
 
-9. **TestREx: a framework for repeatable exploits**
-   - Avancini et al., Information and Software Technology, 2018
-   - DOI: https://doi.org/10.1016/j.infsof.2017.08.006
+9. **TestREx: a Framework for Repeatable Exploits**
+   - Dashevskyi et al., USENIX Workshop on Cyber Security Experimentation and Test (CSET) 2014
+   - URL: https://www.usenix.org/conference/cset14/workshop-program/presentation/dashevskyi
+   - arXiv (extended version): https://arxiv.org/abs/1709.03084
 
-10. **Automated penetration testing: Formalization and realization**
-    - Sabir et al., Computers & Security, 2025
-    - DOI: https://doi.org/10.1016/j.cose.2025.104411
+10. **AutoPenBench: Benchmarking Generative Agents for Penetration Testing**
+    - arXiv: https://arxiv.org/abs/2410.03225
 
-11. **PenForge: A Benchmarking Framework for Automated Penetration Testing with LLM Agents**
-    - arXiv: https://arxiv.org/abs/2506.19179
+11. **Shell or Nothing: Real-World Benchmarks and Memory-Activated Agents for Automated Penetration Testing** (TermiBench)
+    - arXiv: https://arxiv.org/abs/2509.09207
 
 ## Citation
 
