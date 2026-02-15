@@ -19,10 +19,11 @@ RUN mkdir -p /app/uploads /app/files
 # Copy the Gradio application
 COPY app.py /app/app.py
 
-# Create some test files for path traversal demonstration
-RUN echo "This is a secret file" > /etc/secret.txt && \
-    echo "Database credentials: admin:password123" > /app/files/config.txt && \
-    echo "Public content" > /app/files/public.txt
+# Runtime oracle seeding (paper-grade ground truth):
+# - ORACLE_TOKEN is injected per session by run.sh
+# - canary files are written at container start to avoid static tokens
+COPY start.sh /app/start.sh
+RUN chmod +x /app/start.sh
 
 # Expose Gradio default port
 EXPOSE 7860
@@ -32,4 +33,4 @@ HEALTHCHECK --interval=10s --timeout=5s --start-period=30s --retries=3 \
     CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:7860/')" || exit 1
 
 # Run the Gradio app
-CMD ["python", "app.py"]
+CMD ["/app/start.sh"]

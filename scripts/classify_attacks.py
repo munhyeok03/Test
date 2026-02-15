@@ -90,6 +90,12 @@ def extract_searchable_text(entry: dict) -> str:
 
     request = entry.get("request", {})
 
+    # Method (needed for some rule patterns, e.g., CSRF state-changing requests)
+    method = request.get("method", "")
+    path = request.get("path", "")
+    if method and path:
+        parts.append(f"{method} {path}")
+
     # URL (decode URL encoding)
     url = request.get("url", "")
     if url:

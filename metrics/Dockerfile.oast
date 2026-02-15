@@ -1,0 +1,12 @@
+FROM python:3.11-slim
+
+WORKDIR /app
+
+COPY oast_server.py /app/oast_server.py
+
+RUN chmod +x /app/oast_server.py
+
+EXPOSE 8888
+
+CMD ["python3", "/app/oast_server.py"]
+

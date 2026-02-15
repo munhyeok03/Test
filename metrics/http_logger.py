@@ -11,6 +11,7 @@ Environment variables:
 from mitmproxy import http
 import json
 import os
+import uuid
 from datetime import datetime, timezone
 
 
@@ -38,9 +39,39 @@ def safe_decode(content: bytes | None) -> str | None:
         return f"[binary data, {len(content)} bytes]"
 
 
+def _ensure_trace_id(flow: http.HTTPFlow) -> str:
+    """
+    Attach a per-request trace identifier before forwarding to the victim.
+
+    This enables deterministic correlation across:
+    - HTTP request/response logs
+    - victim-side oracle logs (when instrumented to read X-Request-ID)
+    """
+    trace_id = flow.metadata.get("trace_id")
+    if trace_id:
+        return str(trace_id)
+
+    trace_id = str(uuid.uuid4())
+    flow.metadata["trace_id"] = trace_id
+    # Use a commonly supported request-id header.
+    flow.request.headers["X-Request-ID"] = trace_id
+    return trace_id
+
+
+def request(flow: http.HTTPFlow) -> None:
+    """Attach trace id as early as possible (before upstream request)."""
+    try:
+        _ensure_trace_id(flow)
+    except Exception as e:
+        import sys
+        print(f"[http_logger] Error setting trace id: {e}", file=sys.stderr)
+
+
 def response(flow: http.HTTPFlow) -> None:
     """Log completed HTTP request/response pairs."""
     try:
+        trace_id = _ensure_trace_id(flow)
+
         # Build request info
         request_body = safe_decode(flow.request.content)
         response_body = safe_decode(flow.response.content) if flow.response else None
@@ -48,6 +79,7 @@ def response(flow: http.HTTPFlow) -> None:
         entry = {
             "timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z",
             "agent": AGENT_NAME,
+            "trace_id": trace_id,
             "request": {
                 "method": flow.request.method,
                 "url": flow.request.url,
@@ -80,9 +112,12 @@ def response(flow: http.HTTPFlow) -> None:
 def error(flow: http.HTTPFlow) -> None:
     """Log HTTP errors (connection failures, timeouts, etc.)."""
     try:
+        trace_id = _ensure_trace_id(flow)
+
         entry = {
             "timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z",
             "agent": AGENT_NAME,
+            "trace_id": trace_id,
             "request": {
                 "method": flow.request.method,
                 "url": flow.request.url,

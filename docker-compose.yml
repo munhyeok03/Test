@@ -8,11 +8,20 @@ networks:
   # Isolated network for Codex agent
   net-codex:
     driver: bridge
+  # Private network for Codex victim-side components (victim, monitor, OAST)
+  net-codex-victim:
+    driver: bridge
   # Isolated network for Claude agent
   net-claude:
     driver: bridge
+  # Private network for Claude victim-side components (victim, monitor, OAST)
+  net-claude-victim:
+    driver: bridge
   # Isolated network for Gemini agent
   net-gemini:
+    driver: bridge
+  # Private network for Gemini victim-side components (victim, monitor, OAST)
+  net-gemini-victim:
     driver: bridge
 
 services:
@@ -69,7 +78,7 @@ services:
     volumes:
       - ./results/${SESSION_TIMESTAMP}/monitors:/logs
     networks:
-      - net-codex
+      - net-codex-victim
     depends_on:
       - victim-codex
     cap_add:
@@ -90,7 +99,7 @@ services:
     volumes:
       - ./results/${SESSION_TIMESTAMP}/monitors:/logs
     networks:
-      - net-claude
+      - net-claude-victim
     depends_on:
       - victim-claude
     cap_add:
@@ -111,11 +120,71 @@ services:
     volumes:
       - ./results/${SESSION_TIMESTAMP}/monitors:/logs
     networks:
-      - net-gemini
+      - net-gemini-victim
     depends_on:
       - victim-gemini
     cap_add:
       - SYS_PTRACE
+
+  # ===========================================
+  # OAST CALLBACK SERVERS (Ground Truth for Blind Classes)
+  # ===========================================
+  # Per-agent OAST servers are attached only to victim-private networks and
+  # share the session's oracle log volume.
+
+  oast-codex:
+    build:
+      context: ./metrics
+      dockerfile: Dockerfile.oast
+    container_name: oast-codex
+    environment:
+      - AGENT_NAME=codex
+      - LOG_DIR=/logs
+      - OAST_RESPONSE_TOKEN=${ORACLE_TOKEN_CODEX:-}
+    volumes:
+      - ./results/${SESSION_TIMESTAMP}/oracles:/logs
+    networks:
+      net-codex-victim:
+        aliases:
+          - oast
+    depends_on:
+      - victim-codex
+
+  oast-claude:
+    build:
+      context: ./metrics
+      dockerfile: Dockerfile.oast
+    container_name: oast-claude
+    environment:
+      - AGENT_NAME=claude
+      - LOG_DIR=/logs
+      - OAST_RESPONSE_TOKEN=${ORACLE_TOKEN_CLAUDE:-}
+    volumes:
+      - ./results/${SESSION_TIMESTAMP}/oracles:/logs
+    networks:
+      net-claude-victim:
+        aliases:
+          - oast
+    depends_on:
+      - victim-claude
+
+  oast-gemini:
+    build:
+      context: ./metrics
+      dockerfile: Dockerfile.oast
+    container_name: oast-gemini
+    environment:
+      - AGENT_NAME=gemini
+      - LOG_DIR=/logs
+      - OAST_RESPONSE_TOKEN=${ORACLE_TOKEN_GEMINI:-}
+    volumes:
+      - ./results/${SESSION_TIMESTAMP}/oracles:/logs
+    networks:
+      net-gemini-victim:
+        aliases:
+          - oast
+    depends_on:
+      - victim-gemini
 
   # ===========================================
   # CODEX ENVIRONMENT (Isolated)
@@ -123,10 +192,13 @@ services:
   victim-codex:
     image: ${VICTIM_IMAGE:-bkimminich/juice-shop}
     container_name: victim-codex
+    environment:
+      - AGENT_NAME=codex
+      - ORACLE_TOKEN=${ORACLE_TOKEN_CODEX:-}
     networks:
-      - net-codex
+      - net-codex-victim
     ports:
-      - "3002:${VICTIM_PORT:-3000}"  # Host access for challenge verification
+      - "127.0.0.1:3002:${VICTIM_PORT:-3000}"  # Host-only access for challenge verification
 
   http-logger-codex:
     image: mitmproxy/mitmproxy:latest
@@ -140,6 +212,7 @@ services:
       - ./results/${SESSION_TIMESTAMP}/http-logs:/logs
     networks:
       - net-codex
+      - net-codex-victim
     depends_on:
       - victim-codex
 
@@ -176,10 +249,13 @@ services:
   victim-claude:
     image: ${VICTIM_IMAGE:-bkimminich/juice-shop}
     container_name: victim-claude
+    environment:
+      - AGENT_NAME=claude
+      - ORACLE_TOKEN=${ORACLE_TOKEN_CLAUDE:-}
     networks:
-      - net-claude
+      - net-claude-victim
     ports:
-      - "3001:${VICTIM_PORT:-3000}"  # Host access for challenge verification
+      - "127.0.0.1:3001:${VICTIM_PORT:-3000}"  # Host-only access for challenge verification
 
   http-logger-claude:
     image: mitmproxy/mitmproxy:latest
@@ -193,6 +269,7 @@ services:
       - ./results/${SESSION_TIMESTAMP}/http-logs:/logs
     networks:
       - net-claude
+      - net-claude-victim
     depends_on:
       - victim-claude
 
@@ -229,10 +306,13 @@ services:
   victim-gemini:
     image: ${VICTIM_IMAGE:-bkimminich/juice-shop}
     container_name: victim-gemini
+    environment:
+      - AGENT_NAME=gemini
+      - ORACLE_TOKEN=${ORACLE_TOKEN_GEMINI:-}
     networks:
-      - net-gemini
+      - net-gemini-victim
     ports:
-      - "3003:${VICTIM_PORT:-3000}"  # Host access for challenge verification
+      - "127.0.0.1:3003:${VICTIM_PORT:-3000}"  # Host-only access for challenge verification
 
   http-logger-gemini:
     image: mitmproxy/mitmproxy:latest
@@ -246,6 +326,7 @@ services:
       - ./results/${SESSION_TIMESTAMP}/http-logs:/logs
     networks:
       - net-gemini
+      - net-gemini-victim
     depends_on:
       - victim-gemini
 

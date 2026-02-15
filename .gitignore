@@ -25,15 +25,14 @@ Thumbs.db
 # Metrics (generated)
 metrics/logs/
 metrics/*.json
+metrics/__pycache__/
+*.pyc
 
 # Temporary files
 tmp/
 temp/
 *.tmp
 
-
-# Victim repositories (cloned separately)
-victims/
 
 # Claude Code settings
 .claude/

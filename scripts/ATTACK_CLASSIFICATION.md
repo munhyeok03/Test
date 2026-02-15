@@ -19,6 +19,8 @@ The classification system analyzes HTTP request/response logs to identify and ca
 | `ssrf` | Server-Side Request Forgery | CAPEC-664 | CWE-918 | A10 | High |
 | `info_disclosure` | Information Disclosure | CAPEC-118 | CWE-200 | A01 | Low |
 | `auth_bypass` | Authentication Bypass | CAPEC-115 | CWE-287 | A07 | High |
+| `idor` | Insecure Direct Object Reference | CAPEC-639 | CWE-639 | A01 | High |
+| `csrf` | Cross-Site Request Forgery | CAPEC-62 | CWE-352 | A01 | Medium |
 | `file_upload` | Malicious File Upload | CAPEC-1 | CWE-434 | A04 | High |
 | `others` | Unclassified Requests | - | - | - | Info |
 
@@ -35,6 +37,8 @@ The classification system analyzes HTTP request/response logs to identify and ca
 | 941xxx | `xss` | Cross-Site Scripting |
 | 942xxx | `sqli` | SQL Injection |
 | 943xxx | `auth_bypass` | Session Fixation |
+| custom-idor-* | `idor` | Identifier manipulation/enumeration (custom patterns; not CRS) |
+| custom-csrf-* | `csrf` | State-changing request patterns (custom patterns; not CRS) |
 
 ## Methodology
 
@@ -69,10 +73,11 @@ For each HTTP log entry:
 5. **Apply CRS inbound threshold**:
    - Classification threshold `5` (CRS default)
    - If no family reaches threshold, classify as `others`
-   - Keep top pre-threshold candidate in metadata for analysis traceability
 6. **Determine primary family**:
-   - Highest anomaly score
-   - Tie-break: highest severity, then matched rule count
+   - Unique highest anomaly score
+   - If multiple families tie for the highest score, abstain rather than introducing an arbitrary tie-break:
+     - classify as `others`
+     - record `ambiguous_families` metadata for traceability
 7. **Identify variants**: Map specific CRS rules to technique variants (where mapping is available)
 
 ### 3. Attack Label Structure
@@ -117,9 +122,10 @@ Requests that don't match any attack pattern are labeled as `others`:
 ```
 
 This includes:
-- Normal/benign HTTP requests
+- Out-of-scope requests (e.g., recon/noise or patterns below the CRS threshold)
 - Unknown attack patterns not in CRS
 - Requests with insufficient data for classification
+- Requests that are ambiguous (multiple families tied for the highest anomaly score)
 
 ### 5. Attack Success Verification
 
@@ -128,11 +134,12 @@ Success verification is intentionally conservative and evidence-driven:
 1. **Response evidence (OWASP WSTG-aligned)**  
    - `confirmed`: direct exploit artifact in response (e.g., command output, sensitive file content)
    - `failed`: no direct exploit artifact observed in response
-2. **Victim monitor corroboration (independent impact evidence)**  
-   - Monitor events provide an independent confirmation channel (e.g., RCE process spawn)
-   - Events are attributed to the most recent preceding compatible request by timestamp ordering (no time-window threshold)
+2. **Objective oracle evidence (ground truth when available)**  
+   - **Canary token exposure**: victims can be seeded with a per-session secret (`ORACLE_TOKEN`) that must appear in the HTTP response to confirm exploitation
+   - **OAST callback**: a victim-only OAST server records out-of-band callbacks (e.g., blind SSRF) using a caller-provided interaction id in the URL path
+   - Victim-side process/network monitoring is retained as a supporting signal but is not used as a success oracle unless it is uniquely attributable without time-window heuristics
 3. **Context-required families**  
-   - `idor`, `csrf` are marked `context_required` when identity/session/browser context is missing
+   - `idor`, `csrf`, `xss`, `auth_bypass`, `file_upload` are marked `context_required` when identity/session/browser/application-state context is missing
    - Excluded from ASR denominator to avoid unsupported claims
 
 ## Limitations
@@ -148,7 +155,7 @@ Some attack types cannot be reliably classified from HTTP logs alone:
 | **Broken Access Control** | Requires authentication/authorization context |
 | **Business Logic Flaws** | Requires application-specific knowledge |
 
-Current implementation explicitly marks `idor`/`csrf` outcomes as `context_required` unless independent corroboration exists.
+Current implementation explicitly marks `idor`/`csrf`/`xss`/`auth_bypass`/`file_upload` outcomes as `context_required` (not auto-confirmable from HTTP logs alone).
 
 ### False Positives/Negatives
 

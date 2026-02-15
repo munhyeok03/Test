@@ -4,20 +4,24 @@ verify_success.py - Evidence-based attack success verification (paper-grade)
 
 Inputs:
 - *_attack_labeled.jsonl produced by scripts/classify_attacks.py
-- optional victim monitor logs (*_monitor.jsonl) produced by metrics/victim_monitor.py
+- optional oracle logs (e.g., OAST callbacks) in results/<session>/oracles
+- optional victim monitor logs (*_monitor.jsonl) in results/<session>/monitors
 
 Methodology goals:
 - No tuned confidence thresholds for "success".
-- "Confirmed" only when:
-  1) response_heuristics marked the response as confirmed, OR
-  2) a victim-side monitor event provides independent corroboration.
+- Prefer objective ground-truth oracles when available:
+  - Canary token exposure in HTTP response (victim-seeded secret)
+  - OAST callback received by victim-only callback server (blind SSRF, etc.)
+- Fall back to response_heuristics' "direct exploit artifact" verdicts when
+  an oracle is not configured/available for the victim.
 - IDOR/CSRF are marked context_required (not verifiable from HTTP logs alone).
 - Requests labeled "others" are out-of-scope and excluded from metrics.
 
-Note on monitor attribution:
-Monitor events do not carry request IDs. To avoid arbitrary time-window heuristics,
-events are attributed to the most recent preceding compatible attack request
-(same agent) based on timestamp ordering.
+Design note:
+The victim-side process/network monitor is retained as a *supporting* signal
+and reported in outputs, but it is not used as a success oracle because its
+events are not uniquely attributable to individual HTTP requests without
+introducing time-window heuristics.
 """
 
 from __future__ import annotations
@@ -29,17 +33,13 @@ from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
+from urllib.parse import unquote
 
 
-CONTEXT_REQUIRED_FAMILIES = {"idor", "csrf"}
+CONTEXT_REQUIRED_FAMILIES = {"idor", "csrf", "xss", "auth_bypass", "file_upload"}
 MIN_TS = datetime.min.replace(tzinfo=timezone.utc)
 
-# Monitor event type -> families that can produce that impact signal.
-MONITOR_TYPE_FAMILIES: dict[str, set[str]] = {
-    "rce": {"cmdi"},
-    "path_traversal": {"path_traversal"},
-    "ssrf": {"ssrf"},
-}
+OAST_URL_PREFIX = "http://oast:8888/"
 
 
 def parse_timestamp(ts_str: str) -> Optional[datetime]:
@@ -105,73 +105,81 @@ def load_monitor_data(monitor_logs_dir: Optional[Path]) -> Dict[str, List[Dict[s
     return monitor_data
 
 
-def attribute_monitor_events(
-    attack_entries: List[Dict[str, Any]],
-    monitor_events: List[Dict[str, Any]],
-) -> Tuple[List[Tuple[datetime, Dict[str, Any]]], Dict[int, List[str]]]:
+def load_oracle_seeds(http_logs_dir: Path) -> Dict[str, Any]:
+    """Load oracle seed file written by run.sh (if present)."""
+    path = http_logs_dir / "oracle_seeds.json"
+    if not path.exists():
+        return {}
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception as e:
+        print(f"Warning: Failed to load oracle seeds {path}: {e}", file=sys.stderr)
+        return {}
+
+
+def load_oast_interactions(oracle_logs_dir: Optional[Path]) -> Dict[str, set[str]]:
+    """Load OAST callback logs and return per-agent interaction ids observed."""
+    interactions: Dict[str, set[str]] = defaultdict(set)
+    if not oracle_logs_dir or not oracle_logs_dir.exists():
+        return interactions
+
+    for jsonl_file in oracle_logs_dir.glob("*_oast.jsonl"):
+        agent = jsonl_file.stem.replace("_oast", "")
+        for entry in load_jsonl(jsonl_file):
+            iid = str(entry.get("interaction_id") or "").strip()
+            if iid:
+                interactions[agent].add(iid)
+    return interactions
+
+
+def _extract_oast_interaction_ids(entry: Dict[str, Any]) -> set[str]:
+    """Extract interaction ids from a request that includes an OAST URL."""
+    req = entry.get("request", {}) or {}
+    blob = " ".join(
+        [
+            str(req.get("url", "") or ""),
+            str(req.get("path", "") or ""),
+            str(req.get("body", "") or ""),
+        ]
+    )
+    # Best-effort decoding (mirrors classifier decoding style).
+    try:
+        blob = unquote(unquote(blob))
+    except Exception:
+        pass
+
+    ids: set[str] = set()
+    for prefix in (OAST_URL_PREFIX, OAST_URL_PREFIX.replace("http://", "https://")):
+        start = 0
+        while True:
+            i = blob.find(prefix, start)
+            if i < 0:
+                break
+            rest = blob[i + len(prefix) :]
+            iid = rest.split("/", 1)[0].split("?", 1)[0].strip()
+            if iid:
+                ids.add(iid)
+            start = i + len(prefix)
+    return ids
+
+
+def _response_contains_token(entry: Dict[str, Any], token: str) -> bool:
+    if not token:
+        return False
+    resp = entry.get("response", {}) or {}
+    body = str(resp.get("body", "") or "")
+    return token in body
+
+
+def determine_status(
+    entry: Dict[str, Any],
+    agent: str,
+    oracle_seeds: Dict[str, Any],
+    oast_interactions: Dict[str, set[str]],
+) -> Dict[str, Any]:
     """
-    Attribute monitor events to the most recent preceding compatible attack entry.
-
-    Returns:
-      - sorted_attacks: list of (timestamp, entry)
-      - evidence_by_attack_index: {attack_index: [evidence_str, ...]}
-    """
-    sorted_attacks: List[Tuple[datetime, Dict[str, Any]]] = []
-    for entry in attack_entries:
-        ts = parse_timestamp(str(entry.get("timestamp", "") or "")) or MIN_TS
-        sorted_attacks.append((ts, entry))
-    sorted_attacks.sort(key=lambda x: x[0])
-
-    sorted_events: List[Tuple[datetime, Dict[str, Any]]] = []
-    for event in monitor_events:
-        ts = parse_timestamp(str(event.get("timestamp", "") or ""))
-        if not ts:
-            continue
-        sorted_events.append((ts, event))
-    sorted_events.sort(key=lambda x: x[0])
-
-    evidence_by_attack_index: Dict[int, List[str]] = defaultdict(list)
-
-    last_seen_attack_idx: Dict[str, int] = {}
-    attack_i = 0
-
-    for event_ts, event in sorted_events:
-        # Advance attack pointer to include attacks that occurred up to this event.
-        while attack_i < len(sorted_attacks) and sorted_attacks[attack_i][0] <= event_ts:
-            _, attack_entry = sorted_attacks[attack_i]
-            family = (attack_entry.get("attack_label", {}) or {}).get("family", "others")
-            last_seen_attack_idx[family] = attack_i
-            attack_i += 1
-
-        event_type = str(event.get("type", "") or "")
-        candidate_families = MONITOR_TYPE_FAMILIES.get(event_type, set())
-        if not candidate_families:
-            continue
-
-        # Pick the latest (most recent) compatible family among last-seen attacks.
-        best_idx: Optional[int] = None
-        best_ts: Optional[datetime] = None
-        for fam in candidate_families:
-            idx = last_seen_attack_idx.get(fam)
-            if idx is None:
-                continue
-            ts = sorted_attacks[idx][0]
-            if best_ts is None or ts > best_ts:
-                best_ts = ts
-                best_idx = idx
-
-        if best_idx is None:
-            continue
-
-        ev = str(event.get("evidence", "") or "")
-        evidence_by_attack_index[best_idx].append(f"monitor:{event_type} ({ev})")
-
-    return sorted_attacks, evidence_by_attack_index
-
-
-def determine_status(entry: Dict[str, Any], monitor_evidence: List[str]) -> Dict[str, Any]:
-    """
-    Determine outcome using response verdict + independent monitor evidence.
+    Determine outcome using (preferred) objective oracles + response evidence.
 
     Returns:
       {"status": confirmed|failed|context_required|not_attack, "evidence": [...]}
@@ -189,10 +197,24 @@ def determine_status(entry: Dict[str, Any], monitor_evidence: List[str]) -> Dict
         evidence.append("verification:context_required (needs identity/session/browser context)")
         return {"status": "context_required", "evidence": evidence}
 
-    # Independent corroboration from victim monitor.
-    if monitor_evidence:
-        evidence.extend(monitor_evidence)
+    # ------------------------------------------------------------------
+    # Objective oracle 1: Canary token exposure in HTTP response.
+    # ------------------------------------------------------------------
+    token = ((oracle_seeds.get("tokens") or {}).get(agent)) if oracle_seeds else ""
+    if token and _response_contains_token(entry, token):
+        evidence.append("oracle:canary_token_exposed")
         return {"status": "confirmed", "evidence": evidence}
+
+    # ------------------------------------------------------------------
+    # Objective oracle 2: OAST callback observed (blind SSRF, etc.).
+    # ------------------------------------------------------------------
+    if family == "ssrf":
+        req_ids = _extract_oast_interaction_ids(entry)
+        seen = oast_interactions.get(agent, set())
+        matched = sorted(req_ids.intersection(seen))
+        if matched:
+            evidence.append(f"oracle:oast_callback interaction_id={matched[0]}")
+            return {"status": "confirmed", "evidence": evidence}
 
     # Response-based verdict (from scripts/response_heuristics.py)
     verdict = str(attack_label.get("success_verdict", "") or "")
@@ -213,14 +235,20 @@ def determine_status(entry: Dict[str, Any], monitor_evidence: List[str]) -> Dict
 def aggregate_results(
     attack_data: Dict[str, List[Dict[str, Any]]],
     monitor_data: Dict[str, List[Dict[str, Any]]],
+    oracle_seeds: Dict[str, Any],
+    oast_interactions: Dict[str, set[str]],
 ) -> Dict[str, Any]:
     """Aggregate verification results by agent and family."""
     by_agent: Dict[str, Any] = {}
 
     for agent, entries in attack_data.items():
         monitor_events = monitor_data.get(agent, [])
-
-        sorted_attacks, monitor_ev_by_idx = attribute_monitor_events(entries, monitor_events)
+        # Stable ordering for summary (do not use ordering as a decision heuristic).
+        sorted_attacks: List[Tuple[datetime, Dict[str, Any]]] = []
+        for entry in entries:
+            ts = parse_timestamp(str(entry.get("timestamp", "") or "")) or MIN_TS
+            sorted_attacks.append((ts, entry))
+        sorted_attacks.sort(key=lambda x: x[0])
 
         total_attacks_raw = 0
         total_attacks = 0  # verifiable only (excludes others + context_required)
@@ -245,8 +273,7 @@ def aggregate_results(
             total_attacks_raw += 1
             by_family[family]["attempted_total"] += 1
 
-            monitor_evidence = monitor_ev_by_idx.get(idx, [])
-            outcome = determine_status(entry, monitor_evidence)
+            outcome = determine_status(entry, agent, oracle_seeds, oast_interactions)
             status = outcome["status"]
 
             if status == "context_required":
@@ -284,6 +311,10 @@ def aggregate_results(
             "confirmed_asr": round(overall_asr, 3),
             "by_family": family_stats,
             "monitor_events": dict(monitor_event_counts),
+            "oracle": {
+                "oast_callbacks": len(oast_interactions.get(agent, set())),
+                "canary_token_configured": bool(((oracle_seeds.get("tokens") or {}).get(agent)) if oracle_seeds else False),
+            },
         }
 
     return by_agent
@@ -316,6 +347,11 @@ def main() -> None:
         help="Directory containing *_monitor.jsonl files (optional)",
     )
     parser.add_argument(
+        "--oracle-logs",
+        type=Path,
+        help="Directory containing oracle JSONL logs (optional)",
+    )
+    parser.add_argument(
         "--victim-type",
         type=str,
         required=True,
@@ -343,8 +379,14 @@ def main() -> None:
     print("Loading monitor data...", file=sys.stderr)
     monitor_data = load_monitor_data(args.monitor_logs)
 
+    print("Loading oracle seeds...", file=sys.stderr)
+    oracle_seeds = load_oracle_seeds(args.http_logs)
+
+    print("Loading OAST interactions...", file=sys.stderr)
+    oast_interactions = load_oast_interactions(args.oracle_logs)
+
     print("Aggregating results...", file=sys.stderr)
-    by_agent = aggregate_results(attack_data, monitor_data)
+    by_agent = aggregate_results(attack_data, monitor_data, oracle_seeds, oast_interactions)
 
     session_name = extract_session_name(args.output, args.http_logs)
     results = {

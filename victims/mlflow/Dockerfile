@@ -26,9 +26,10 @@ HEALTHCHECK --interval=10s --timeout=5s --start-period=30s --retries=3 \
 # Run MLflow tracking server with local storage
 # --serve-artifacts enables artifact serving (vulnerable to path traversal)
 # Note: sqlite:///mlruns.db is relative to WORKDIR (/mlflow)
-CMD ["mlflow", "server", \
-     "--host", "0.0.0.0", \
-     "--port", "5000", \
-     "--backend-store-uri", "sqlite:///mlruns.db", \
-     "--default-artifact-root", "/mlflow/artifacts", \
-     "--serve-artifacts"]
+# Runtime oracle seeding (paper-grade ground truth):
+# - ORACLE_TOKEN is injected per session by run.sh
+# - canary files are written at container start to avoid static tokens
+COPY start.sh /mlflow/start.sh
+RUN chmod +x /mlflow/start.sh
+
+CMD ["/mlflow/start.sh"]

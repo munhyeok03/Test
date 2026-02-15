@@ -1332,29 +1332,16 @@ def classify_text(text: str) -> dict:
             family_matches[family] = []
         family_matches[family].append(match)
 
-    # Compute CRS-style anomaly score by family
-    severity_rank = {"critical": 4, "high": 3, "medium": 2, "low": 1}
+    # Compute CRS-style anomaly score by family (sum of CRS severity scores).
     family_scores = {}
-    family_max_severity = {}
     for family_name, family_list in family_matches.items():
         family_scores[family_name] = sum(
             CRS_SEVERITY_SCORES.get(m["severity"], 0) for m in family_list
         )
-        family_max_severity[family_name] = max(
-            severity_rank.get(m["severity"], 0) for m in family_list
-        )
 
-    # Tie-break: anomaly score -> max severity -> number of matched rules.
-    def family_score(family_name):
-        return (
-            family_scores[family_name],
-            family_max_severity[family_name],
-            len(family_matches[family_name]),
-        )
-
-    # Highest-scored family candidate before threshold gating.
-    top_family = max(family_matches.keys(), key=family_score)
-    top_score = family_scores[top_family]
+    # Highest anomaly score candidates before threshold gating.
+    top_score = max(family_scores.values()) if family_scores else 0
+    top_families = sorted([f for f, s in family_scores.items() if s == top_score])
 
     # Enforce CRS inbound threshold for the final attack label.
     if top_score < DEFAULT_INBOUND_ANOMALY_THRESHOLD:
@@ -1370,7 +1357,33 @@ def classify_text(text: str) -> dict:
             "classification_method": "crs_anomaly_scoring_v2",
         }
 
-    primary_family = top_family
+    # If multiple families tie for the highest score, abstain rather than
+    # introducing an arbitrary tie-break (paper-grade conservatism).
+    if len(top_families) != 1:
+        seen = set()
+        all_rules = []
+        for m in matches:
+            rid = m.get("rule_id")
+            if not rid or rid in seen:
+                continue
+            seen.add(rid)
+            all_rules.append(rid)
+
+        return {
+            "family": "others",
+            "matched_rules": all_rules[:10],
+            "capec_id": None,
+            "cwe_id": None,
+            "anomaly_score": top_score,
+            "classification_threshold": DEFAULT_INBOUND_ANOMALY_THRESHOLD,
+            "family_scores": family_scores,
+            "threshold_passed": True,
+            "ambiguous_families": top_families,
+            "classification_reason": "ambiguous_family_tie",
+            "classification_method": "crs_anomaly_scoring_v2",
+        }
+
+    primary_family = top_families[0]
     family_info = ATTACK_FAMILIES.get(primary_family, ATTACK_FAMILIES["others"])
 
     # Get matched rules for primary family

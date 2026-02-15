@@ -25,7 +25,12 @@ from typing import Optional
 
 # Families that cannot be confirmed from request/response pairs alone.
 # (Requires multi-identity, browser/session, or application state context.)
-CONTEXT_REQUIRED_FAMILIES = {"idor", "csrf"}
+#
+# Notes (WSTG-aligned):
+# - XSS: reflection is not equivalent to script execution; browser context is required.
+# - Auth bypass: token/cookie issuance alone does not prove bypass without access-control context.
+# - File upload: upload acknowledgement alone does not prove malicious impact without retrieval/execution context.
+CONTEXT_REQUIRED_FAMILIES = {"idor", "csrf", "xss", "auth_bypass", "file_upload"}
 
 # OWASP WSTG reference metadata (used for traceability in output).
 # Note: exact section URLs are kept as stable deep-links where possible.
@@ -111,37 +116,6 @@ def _first_match(patterns: list[EvidencePattern], text: str) -> Optional[tuple[E
     return None
 
 
-def _xss_reflection_evidence(entry: dict) -> Optional[str]:
-    """
-    Confirm reflected XSS only when an unencoded payload marker from the request
-    is reflected verbatim in the response body.
-    """
-    request = entry.get("request", {}) or {}
-    response = entry.get("response", {}) or {}
-
-    req_body = str(request.get("body", "") or "")
-    req_url = str(request.get("url", "") or "")
-    resp_body = str(response.get("body", "") or "")
-    if not resp_body:
-        return None
-
-    haystack = req_body + " " + req_url
-
-    markers: list[str] = []
-    markers.extend(re.findall(r"<script[^>]*>.*?</script>", haystack, re.IGNORECASE | re.DOTALL))
-    markers.extend(re.findall(r"\bon\w+\s*=\s*['\"][^'\"]+['\"]", haystack, re.IGNORECASE))
-    markers.extend(re.findall(r"javascript\s*:[^\s\"']+", haystack, re.IGNORECASE))
-
-    for marker in markers:
-        # Avoid extremely short fragments.
-        if len(marker) < 5:
-            continue
-        if marker in resp_body:
-            return f"Unencoded XSS payload marker reflected in response: '{marker[:120]}'"
-
-    return None
-
-
 CONFIRMED_EVIDENCE: dict[str, list[EvidencePattern]] = {
     "sqli": [
         EvidencePattern.compile(
@@ -167,30 +141,6 @@ CONFIRMED_EVIDENCE: dict[str, list[EvidencePattern]] = {
         EvidencePattern.compile(r"(?:ami-[0-9a-f]+|instance-id|instance-type|local-ipv4)", "Cloud metadata response (AWS-style)"),
         EvidencePattern.compile(r"(?:computeMetadata|google-compute|kube-env)", "Cloud metadata response (GCP-style)"),
         EvidencePattern.compile(r"(?:AzureEnvironment|IDENTITY_ENDPOINT|MSI_SECRET)", "Cloud metadata response (Azure-style)"),
-    ],
-    "auth_bypass": [
-        EvidencePattern.compile(
-            r"(?:Set-Cookie:\s*(?:session|token|auth|jwt)=)",
-            "Authentication cookie set in response",
-        ),
-        EvidencePattern.compile(
-            r"\"(?:token|access_token|auth_token|jwt|session_id|sessionId)\"\s*:\s*\"[A-Za-z0-9._-]{10,}\"",
-            "Authentication token issued in response body",
-        ),
-        EvidencePattern.compile(
-            r"\"(?:authenticated|isAuthenticated|logged_in|loggedIn)\"\s*:\s*true",
-            "Explicit authentication success flag in response body",
-        ),
-    ],
-    "file_upload": [
-        EvidencePattern.compile(
-            r"\"(?:filename|file_name|path|url|location)\"\s*:\s*\"[^\"]*\.(?:php|phtml|jsp|jspx|asp|aspx|exe|dll|sh|ps1|py|pl|rb)\"",
-            "Unexpected/executable file extension accepted and referenced by server",
-        ),
-        EvidencePattern.compile(
-            r"\"(?:uploaded|success|stored|saved)\"\s*:\s*true",
-            "Server indicates upload stored successfully",
-        ),
     ],
     "info_disclosure": [
         EvidencePattern.compile(
@@ -233,26 +183,6 @@ def evaluate_response(entry: dict, family: str) -> dict:
         }
 
     body, response_text = _flatten_response_text(entry)
-
-    if family == "xss":
-        reflected = _xss_reflection_evidence(entry)
-        if reflected:
-            return {
-                "success": True,
-                "evidence": reflected,
-                "verdict": "confirmed",
-                "requires_context": False,
-                "wstg_id": wstg_ref.get("id"),
-                "wstg_url": wstg_ref.get("url"),
-            }
-        return {
-            "success": False,
-            "evidence": "No unencoded payload reflection observed in response body",
-            "verdict": "failed",
-            "requires_context": False,
-            "wstg_id": wstg_ref.get("id"),
-            "wstg_url": wstg_ref.get("url"),
-        }
 
     patterns = CONFIRMED_EVIDENCE.get(family, [])
     if patterns:
@@ -297,14 +227,14 @@ if __name__ == "__main__":
             },
             "expected": "confirmed",
         },
-        # xss confirmed by reflection
+        # xss is context-required (do not auto-claim "execution" from HTTP logs)
         {
             "family": "xss",
             "entry": {
                 "request": {"method": "GET", "url": "/search?q=<script>alert(1)</script>", "body": ""},
                 "response": {"status_code": 200, "headers": {}, "body": "Results: <script>alert(1)</script>"},
             },
-            "expected": "confirmed",
+            "expected": "context_required",
         },
         # csrf is context-required
         {
