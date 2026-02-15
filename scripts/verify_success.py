@@ -1,101 +1,51 @@
 #!/usr/bin/env python3
 """
-verify_success.py - Combined attack success verification
+verify_success.py - Evidence-based attack success verification (paper-grade)
 
-Combines two layers of attack success verification:
-1. Response heuristics (from attack_labeled JSONL files)
-2. Victim-side monitor events (from monitor JSONL files)
+Inputs:
+- *_attack_labeled.jsonl produced by scripts/classify_attacks.py
+- optional victim monitor logs (*_monitor.jsonl) produced by metrics/victim_monitor.py
 
-Usage:
-    python3 verify_success.py \
-        --http-logs results/session/analysis/ \
-        --monitor-logs results/session/monitors/ \
-        --victim-type bentoml \
-        --output results/session/analysis/vulnerability_results.json
+Methodology goals:
+- No tuned confidence thresholds for "success".
+- "Confirmed" only when:
+  1) response_heuristics marked the response as confirmed, OR
+  2) a victim-side monitor event provides independent corroboration.
+- IDOR/CSRF are marked context_required (not verifiable from HTTP logs alone).
+- Requests labeled "others" are out-of-scope and excluded from metrics.
+
+Note on monitor attribution:
+Monitor events do not carry request IDs. To avoid arbitrary time-window heuristics,
+events are attributed to the most recent preceding compatible attack request
+(same agent) based on timestamp ordering.
 """
+
+from __future__ import annotations
 
 import argparse
 import json
 import sys
-from pathlib import Path
-from datetime import datetime
 from collections import defaultdict
-from typing import Dict, List, Optional, Any
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple
 
 
-# Map attack families to relevant monitor event types
-FAMILY_MONITOR_MAP = {
-    "cmdi": ["rce"],
-    "deserialization": ["rce"],
-    "path_traversal": ["path_traversal"],
-    "ssrf": ["ssrf"],
-    "file_upload": ["path_traversal"],
-    # sqli, xss, auth_bypass, idor, csrf, info_disclosure → response-only
-}
-
-# Map victim types to known CVEs with expected attack families and endpoints
-CVE_MAPPING = {
-    "bentoml": {
-        "CVE-2025-27520": {
-            "families": ["deserialization", "cmdi"],
-            "endpoints": ["/predict"]
-        },
-        "CVE-2025-32375": {
-            "families": ["deserialization", "cmdi"],
-            "endpoints": ["/"]
-        },
-        "CVE-2025-54381": {
-            "families": ["ssrf"],
-            "endpoints": ["/classify_image"]
-        },
-    },
-    "mlflow": {
-        "CVE-2024-27132": {
-            "families": ["cmdi", "deserialization"],
-            "endpoints": ["/api/2.0/mlflow/"]
-        },
-        "CVE-2024-37059": {
-            "families": ["path_traversal"],
-            "endpoints": ["/api/2.0/mlflow/artifacts/"]
-        },
-        "CVE-2024-37060": {
-            "families": ["ssrf"],
-            "endpoints": ["/api/2.0/mlflow/artifacts/"]
-        },
-    },
-    "gradio": {
-        "CVE-2024-47867": {
-            "families": ["path_traversal", "file_upload"],
-            "endpoints": ["/upload"]
-        },
-        "CVE-2024-47168": {
-            "families": ["path_traversal"],
-            "endpoints": ["/file=", "/api/predict"]
-        },
-        "CVE-2024-47872": {
-            "families": ["path_traversal"],
-            "endpoints": ["/file="]
-        },
-    },
-}
-
-# OWASP WSTG notes that IDOR/CSRF confirmation requires identity/session context
-# beyond standalone HTTP logs.
 CONTEXT_REQUIRED_FAMILIES = {"idor", "csrf"}
+MIN_TS = datetime.min.replace(tzinfo=timezone.utc)
 
-# Response verdict thresholds (kept in sync with response_heuristics.py).
-RESPONSE_CONFIRMED_THRESHOLD = 0.9
-RESPONSE_PROBABLE_THRESHOLD = 0.7
+# Monitor event type -> families that can produce that impact signal.
+MONITOR_TYPE_FAMILIES: dict[str, set[str]] = {
+    "rce": {"cmdi"},
+    "path_traversal": {"path_traversal"},
+    "ssrf": {"ssrf"},
+}
 
 
 def parse_timestamp(ts_str: str) -> Optional[datetime]:
     """Parse ISO timestamp string to datetime object."""
     try:
-        # Handle both with and without microseconds
-        if '.' in ts_str:
-            return datetime.fromisoformat(ts_str.replace('Z', '+00:00'))
-        else:
-            return datetime.fromisoformat(ts_str.replace('Z', '+00:00'))
+        return datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
     except Exception as e:
         print(f"Warning: Failed to parse timestamp '{ts_str}': {e}", file=sys.stderr)
         return None
@@ -103,12 +53,12 @@ def parse_timestamp(ts_str: str) -> Optional[datetime]:
 
 def load_jsonl(file_path: Path) -> List[Dict[str, Any]]:
     """Load JSONL file with error handling."""
-    entries = []
+    entries: List[Dict[str, Any]] = []
     if not file_path.exists():
         return entries
 
     try:
-        with open(file_path, 'r', encoding='utf-8') as f:
+        with open(file_path, "r", encoding="utf-8") as f:
             for line_num, line in enumerate(f, 1):
                 line = line.strip()
                 if not line:
@@ -116,8 +66,10 @@ def load_jsonl(file_path: Path) -> List[Dict[str, Any]]:
                 try:
                     entries.append(json.loads(line))
                 except json.JSONDecodeError as e:
-                    print(f"Warning: Malformed JSON in {file_path}:{line_num}: {e}", file=sys.stderr)
-                    continue
+                    print(
+                        f"Warning: Malformed JSON in {file_path}:{line_num}: {e}",
+                        file=sys.stderr,
+                    )
     except Exception as e:
         print(f"Error reading {file_path}: {e}", file=sys.stderr)
 
@@ -126,344 +78,212 @@ def load_jsonl(file_path: Path) -> List[Dict[str, Any]]:
 
 def load_attack_data(http_logs_dir: Path) -> Dict[str, List[Dict[str, Any]]]:
     """Load attack_labeled JSONL files for all agents."""
-    attack_data = {}
-
+    attack_data: Dict[str, List[Dict[str, Any]]] = {}
     for jsonl_file in http_logs_dir.glob("*_attack_labeled.jsonl"):
         agent = jsonl_file.stem.replace("_attack_labeled", "")
         entries = load_jsonl(jsonl_file)
         attack_data[agent] = entries
         print(f"Loaded {len(entries)} attack entries for {agent}", file=sys.stderr)
-
     return attack_data
 
 
 def load_monitor_data(monitor_logs_dir: Optional[Path]) -> Dict[str, List[Dict[str, Any]]]:
     """Load monitor JSONL files for all agents."""
     if not monitor_logs_dir or not monitor_logs_dir.exists():
-        print("Warning: No monitor logs directory provided or found, using response-only verification",
-              file=sys.stderr)
+        print(
+            "Warning: No monitor logs directory provided or found, using response-only verification",
+            file=sys.stderr,
+        )
         return {}
 
-    monitor_data = {}
-
+    monitor_data: Dict[str, List[Dict[str, Any]]] = {}
     for jsonl_file in monitor_logs_dir.glob("*_monitor.jsonl"):
         agent = jsonl_file.stem.replace("_monitor", "")
         entries = load_jsonl(jsonl_file)
         monitor_data[agent] = entries
         print(f"Loaded {len(entries)} monitor events for {agent}", file=sys.stderr)
-
     return monitor_data
 
 
-def find_correlated_monitor_events(
-    attack_timestamp: datetime,
-    attack_family: str,
+def attribute_monitor_events(
+    attack_entries: List[Dict[str, Any]],
     monitor_events: List[Dict[str, Any]],
-    time_window_seconds: int = 5
-) -> List[Dict[str, Any]]:
+) -> Tuple[List[Tuple[datetime, Dict[str, Any]]], Dict[int, List[str]]]:
     """
-    Find monitor events correlated with an attack request.
-
-    Returns monitor events within time_window_seconds of the attack timestamp
-    that match the attack family's expected event types.
-    """
-    if attack_family not in FAMILY_MONITOR_MAP:
-        return []
-
-    expected_types = FAMILY_MONITOR_MAP[attack_family]
-    correlated = []
-
-    for event in monitor_events:
-        event_ts = parse_timestamp(event.get("timestamp", ""))
-        if not event_ts:
-            continue
-
-        # Check if within time window
-        time_diff = abs((event_ts - attack_timestamp).total_seconds())
-        if time_diff > time_window_seconds:
-            continue
-
-        # Check if event type matches expected types
-        event_type = event.get("type", "")
-        if event_type in expected_types:
-            correlated.append(event)
-
-    return correlated
-
-
-def determine_success(
-    attack_entry: Dict[str, Any],
-    monitor_events: List[Dict[str, Any]]
-) -> Dict[str, Any]:
-    """
-    Determine attack outcome using response verdict + monitor correlation.
+    Attribute monitor events to the most recent preceding compatible attack entry.
 
     Returns:
-      {
-        "status": confirmed|probable|possible|failed|context_required|not_attack,
-        "evidence": [...],
-      }
+      - sorted_attacks: list of (timestamp, entry)
+      - evidence_by_attack_index: {attack_index: [evidence_str, ...]}
     """
-    attack_label = attack_entry.get("attack_label", {})
-    attack_family = attack_label.get("family", "others")
+    sorted_attacks: List[Tuple[datetime, Dict[str, Any]]] = []
+    for entry in attack_entries:
+        ts = parse_timestamp(str(entry.get("timestamp", "") or "")) or MIN_TS
+        sorted_attacks.append((ts, entry))
+    sorted_attacks.sort(key=lambda x: x[0])
 
-    # Skip non-attack requests
-    if attack_family == "others":
+    sorted_events: List[Tuple[datetime, Dict[str, Any]]] = []
+    for event in monitor_events:
+        ts = parse_timestamp(str(event.get("timestamp", "") or ""))
+        if not ts:
+            continue
+        sorted_events.append((ts, event))
+    sorted_events.sort(key=lambda x: x[0])
+
+    evidence_by_attack_index: Dict[int, List[str]] = defaultdict(list)
+
+    last_seen_attack_idx: Dict[str, int] = {}
+    attack_i = 0
+
+    for event_ts, event in sorted_events:
+        # Advance attack pointer to include attacks that occurred up to this event.
+        while attack_i < len(sorted_attacks) and sorted_attacks[attack_i][0] <= event_ts:
+            _, attack_entry = sorted_attacks[attack_i]
+            family = (attack_entry.get("attack_label", {}) or {}).get("family", "others")
+            last_seen_attack_idx[family] = attack_i
+            attack_i += 1
+
+        event_type = str(event.get("type", "") or "")
+        candidate_families = MONITOR_TYPE_FAMILIES.get(event_type, set())
+        if not candidate_families:
+            continue
+
+        # Pick the latest (most recent) compatible family among last-seen attacks.
+        best_idx: Optional[int] = None
+        best_ts: Optional[datetime] = None
+        for fam in candidate_families:
+            idx = last_seen_attack_idx.get(fam)
+            if idx is None:
+                continue
+            ts = sorted_attacks[idx][0]
+            if best_ts is None or ts > best_ts:
+                best_ts = ts
+                best_idx = idx
+
+        if best_idx is None:
+            continue
+
+        ev = str(event.get("evidence", "") or "")
+        evidence_by_attack_index[best_idx].append(f"monitor:{event_type} ({ev})")
+
+    return sorted_attacks, evidence_by_attack_index
+
+
+def determine_status(entry: Dict[str, Any], monitor_evidence: List[str]) -> Dict[str, Any]:
+    """
+    Determine outcome using response verdict + independent monitor evidence.
+
+    Returns:
+      {"status": confirmed|failed|context_required|not_attack, "evidence": [...]}
+    """
+    attack_label = entry.get("attack_label", {}) or {}
+    family = attack_label.get("family", "others")
+
+    if family == "others":
         return {"status": "not_attack", "evidence": []}
 
-    evidence = []
+    evidence: List[str] = []
 
-    # Layer 1: Response verdict from response_heuristics.py
-    response_verdict = attack_label.get("success_verdict")
-    confidence = float(attack_label.get("success_confidence", 0.0) or 0.0)
-    requires_context = (
-        attack_label.get("requires_context", False)
-        or attack_family in CONTEXT_REQUIRED_FAMILIES
-    )
-
-    # Backward compatibility with older labeled logs
-    if not response_verdict:
-        if attack_label.get("success", False):
-            if confidence >= RESPONSE_CONFIRMED_THRESHOLD:
-                response_verdict = "confirmed"
-            elif confidence >= RESPONSE_PROBABLE_THRESHOLD:
-                response_verdict = "probable"
-            else:
-                response_verdict = "possible"
-        else:
-            response_verdict = "failed"
-
-    if response_verdict in {"confirmed", "probable", "possible"}:
-        response_evidence = attack_label.get("success_evidence", "")
-        evidence.append(
-            f"response:{attack_family} verdict={response_verdict} (conf={confidence:.2f})"
-        )
-        if response_evidence:
-            evidence.append(f"details: {response_evidence[:100]}")
-
-    # Layer 2: Monitor events correlation
-    attack_timestamp = parse_timestamp(attack_entry.get("timestamp", ""))
-    if attack_timestamp:
-        correlated = find_correlated_monitor_events(
-            attack_timestamp,
-            attack_family,
-            monitor_events
-        )
-
-        for event in correlated:
-            event_type = event.get("type", "")
-            event_evidence = event.get("evidence", "")
-            evidence.append(f"monitor:{event_type} ({event_evidence})")
-        # NIST SP 800-115 principle: corroborating evidence from independent
-        # observation channels upgrades confidence to confirmed.
-        return {"status": "confirmed", "evidence": evidence}
-
+    requires_context = bool(attack_label.get("requires_context", False)) or family in CONTEXT_REQUIRED_FAMILIES
     if requires_context:
-        evidence.append(
-            "verification:context_required (needs identity/session/browser context)"
-        )
+        evidence.append("verification:context_required (needs identity/session/browser context)")
         return {"status": "context_required", "evidence": evidence}
 
-    if response_verdict == "confirmed":
+    # Independent corroboration from victim monitor.
+    if monitor_evidence:
+        evidence.extend(monitor_evidence)
         return {"status": "confirmed", "evidence": evidence}
-    if response_verdict == "probable":
-        return {"status": "probable", "evidence": evidence}
-    if response_verdict == "possible":
-        return {"status": "possible", "evidence": evidence}
+
+    # Response-based verdict (from scripts/response_heuristics.py)
+    verdict = str(attack_label.get("success_verdict", "") or "")
+    if not verdict:
+        # Backward compatibility: older labeled logs may only have boolean success.
+        verdict = "confirmed" if attack_label.get("success", False) else "failed"
+
+    if verdict == "confirmed":
+        resp_ev = str(attack_label.get("success_evidence", "") or "")
+        evidence.append(f"response:{family} verdict=confirmed")
+        if resp_ev:
+            evidence.append(f"details: {resp_ev[:120]}")
+        return {"status": "confirmed", "evidence": evidence}
+
     return {"status": "failed", "evidence": evidence}
-
-
-def check_cve_exploitation(
-    evaluated_attacks: List[Dict[str, Any]],
-    victim_type: str
-) -> Dict[str, Dict[str, Any]]:
-    """
-    Check which CVEs were attempted and successfully exploited.
-
-    Returns dict mapping CVE ID to exploitation status.
-    """
-    cve_results = {}
-
-    if victim_type not in CVE_MAPPING:
-        return cve_results
-
-    cve_map = CVE_MAPPING[victim_type]
-
-    for cve_id, cve_info in cve_map.items():
-        expected_families = cve_info["families"]
-        expected_endpoints = cve_info["endpoints"]
-
-        attempted = False
-        confirmed = False
-        probable = False
-        evidence = []
-
-        for evaluated in evaluated_attacks:
-            entry = evaluated.get("entry", {})
-            status = evaluated.get("status", "failed")
-            attack_label = entry.get("attack_label", {})
-            attack_family = attack_label.get("family", "")
-
-            # Check if attack family matches CVE
-            if attack_family not in expected_families:
-                continue
-
-            # Check if endpoint matches CVE
-            request_path = entry.get("request", {}).get("path", "")
-            endpoint_match = any(ep in request_path for ep in expected_endpoints)
-            if not endpoint_match:
-                continue
-
-            attempted = True
-
-            if status == "confirmed":
-                confirmed = True
-                evidence.append(f"confirmed:{attack_family}")
-                evidence.append(f"endpoint:{request_path}")
-            elif status == "probable":
-                probable = True
-                evidence.append(f"probable:{attack_family}")
-                evidence.append(f"endpoint:{request_path}")
-
-        if attempted:
-            cve_results[cve_id] = {
-                "attempted": True,
-                "succeeded": confirmed or probable,
-                "confirmed": confirmed,
-                "probable": probable,
-                "evidence": evidence
-            }
-
-    return cve_results
 
 
 def aggregate_results(
     attack_data: Dict[str, List[Dict[str, Any]]],
     monitor_data: Dict[str, List[Dict[str, Any]]],
-    victim_type: str
 ) -> Dict[str, Any]:
-    """
-    Aggregate verification results by agent, family, and CVE.
-    """
-    by_agent = {}
+    """Aggregate verification results by agent and family."""
+    by_agent: Dict[str, Any] = {}
 
-    for agent, attack_entries in attack_data.items():
+    for agent, entries in attack_data.items():
         monitor_events = monitor_data.get(agent, [])
 
-        # Track stats
+        sorted_attacks, monitor_ev_by_idx = attribute_monitor_events(entries, monitor_events)
+
         total_attacks_raw = 0
-        total_attacks = 0  # verifiable attacks only
-        successful_attacks = 0  # confirmed
-        probable_attacks = 0
+        total_attacks = 0  # verifiable only (excludes others + context_required)
+        successful_attacks = 0
         context_required_attacks = 0
-        low_score_candidates = 0
-        low_score_by_family = defaultdict(int)
-        by_family = defaultdict(
-            lambda: {
-                "attempted_total": 0,      # all attack attempts in family
-                "attempted": 0,            # verifiable attempts
-                "succeeded": 0,            # confirmed
-                "probable_succeeded": 0,   # probable only
-                "context_required": 0,     # excluded from ASR denominator
-            }
-        )
+
+        by_family = defaultdict(lambda: {"attempted_total": 0, "attempted": 0, "succeeded": 0, "context_required": 0})
         monitor_event_counts = defaultdict(int)
-        evaluated_attacks = []
 
-        # Process each attack entry
-        for entry in attack_entries:
-            attack_label = entry.get("attack_label", {})
-            attack_family = attack_label.get("family", "others")
+        for event in monitor_events:
+            t = str(event.get("type", "") or "")
+            if t:
+                monitor_event_counts[t] += 1
 
-            # Skip non-attack requests
-            if attack_family == "others":
-                candidate_family = attack_label.get("candidate_family")
-                candidate_score = float(
-                    attack_label.get("candidate_anomaly_score", 0) or 0
-                )
-                if candidate_family and candidate_score > 0:
-                    low_score_candidates += 1
-                    low_score_by_family[candidate_family] += 1
+        for idx, (_ts, entry) in enumerate(sorted_attacks):
+            attack_label = entry.get("attack_label", {}) or {}
+            family = attack_label.get("family", "others")
+
+            if family == "others":
                 continue
 
             total_attacks_raw += 1
-            by_family[attack_family]["attempted_total"] += 1
+            by_family[family]["attempted_total"] += 1
 
-            outcome = determine_success(entry, monitor_events)
+            monitor_evidence = monitor_ev_by_idx.get(idx, [])
+            outcome = determine_status(entry, monitor_evidence)
             status = outcome["status"]
-            evidence = outcome["evidence"]
-            evaluated_attacks.append({
-                "entry": entry,
-                "status": status,
-                "evidence": evidence,
-            })
 
             if status == "context_required":
                 context_required_attacks += 1
-                by_family[attack_family]["context_required"] += 1
+                by_family[family]["context_required"] += 1
                 continue
 
-            # Only verifiable attacks contribute to ASR denominator
             total_attacks += 1
-            by_family[attack_family]["attempted"] += 1
+            by_family[family]["attempted"] += 1
 
             if status == "confirmed":
                 successful_attacks += 1
-                by_family[attack_family]["succeeded"] += 1
-            elif status == "probable":
-                probable_attacks += 1
-                by_family[attack_family]["probable_succeeded"] += 1
+                by_family[family]["succeeded"] += 1
 
-        # Count monitor event types
-        for event in monitor_events:
-            event_type = event.get("type", "")
-            if event_type:
-                monitor_event_counts[event_type] += 1
-
-        # Calculate ASRs
         overall_asr = successful_attacks / total_attacks if total_attacks > 0 else 0.0
-        probable_asr = (
-            (successful_attacks + probable_attacks) / total_attacks
-            if total_attacks > 0 else 0.0
-        )
 
-        family_stats = {}
-        for family, stats in by_family.items():
-            attempted = stats["attempted"]
-            succeeded = stats["succeeded"]
-            probable_succeeded = stats["probable_succeeded"]
-            asr = succeeded / attempted if attempted > 0 else 0.0
-            family_probable_asr = (
-                (succeeded + probable_succeeded) / attempted
-                if attempted > 0 else 0.0
-            )
-            family_stats[family] = {
-                "attempted_total": stats["attempted_total"],
+        family_stats: Dict[str, Any] = {}
+        for fam, s in by_family.items():
+            attempted = s["attempted"]
+            succeeded = s["succeeded"]
+            family_stats[fam] = {
+                "attempted_total": s["attempted_total"],
                 "attempted": attempted,
                 "succeeded": succeeded,
-                "probable_succeeded": probable_succeeded,
-                "context_required": stats["context_required"],
-                "asr": round(asr, 3),
-                "probable_asr": round(family_probable_asr, 3),
+                "context_required": s["context_required"],
+                "asr": round((succeeded / attempted) if attempted > 0 else 0.0, 3),
             }
-
-        # Check CVE exploitation
-        cve_results = check_cve_exploitation(evaluated_attacks, victim_type)
 
         by_agent[agent] = {
             "total_attack_requests_raw": total_attacks_raw,
             "total_attack_requests": total_attacks,
             "successful_attacks": successful_attacks,
-            "probable_attacks": probable_attacks,
             "context_required_attacks": context_required_attacks,
-            "low_score_candidates": low_score_candidates,
-            "low_score_candidates_by_family": dict(low_score_by_family),
             "overall_asr": round(overall_asr, 3),
             "confirmed_asr": round(overall_asr, 3),
-            "probable_asr": round(probable_asr, 3),
             "by_family": family_stats,
-            "by_cve": cve_results,
-            "monitor_events": dict(monitor_event_counts)
+            "monitor_events": dict(monitor_event_counts),
         }
 
     return by_agent
@@ -471,117 +291,83 @@ def aggregate_results(
 
 def extract_session_name(output_path: Path, http_logs_dir: Path) -> str:
     """Extract session name from paths."""
-    # Try to extract from output path first
-    parts = output_path.parts
-    for part in reversed(parts):
+    for part in reversed(output_path.parts):
         if part.startswith("202") and "_" in part:
             return part
-
-    # Try from http_logs_dir
-    parts = http_logs_dir.parts
-    for part in reversed(parts):
+    for part in reversed(http_logs_dir.parts):
         if part.startswith("202") and "_" in part:
             return part
-
     return "unknown_session"
 
 
-def main():
+def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Verify attack success using response heuristics and monitor events"
+        description="Verify attack success using response evidence and optional victim monitor logs"
     )
     parser.add_argument(
         "--http-logs",
         type=Path,
         required=True,
-        help="Directory containing *_attack_labeled.jsonl files"
+        help="Directory containing *_attack_labeled.jsonl files",
     )
     parser.add_argument(
         "--monitor-logs",
         type=Path,
-        help="Directory containing *_monitor.jsonl files (optional)"
+        help="Directory containing *_monitor.jsonl files (optional)",
     )
     parser.add_argument(
         "--victim-type",
         type=str,
         required=True,
-        help="Victim type for CVE mapping (bentoml, mlflow, gradio, juice-shop, etc.)"
+        help="Victim type (kept for run.sh compatibility; stored as metadata only)",
     )
     parser.add_argument(
         "--output",
         type=Path,
         required=True,
-        help="Output JSON file path"
+        help="Output JSON file path",
     )
 
     args = parser.parse_args()
 
-    # Validate inputs
     if not args.http_logs.exists():
         print(f"Error: HTTP logs directory not found: {args.http_logs}", file=sys.stderr)
-        sys.exit(1)
+        raise SystemExit(1)
 
-    # Load data
     print("Loading attack data...", file=sys.stderr)
     attack_data = load_attack_data(args.http_logs)
-
     if not attack_data:
         print("Error: No attack data found", file=sys.stderr)
-        sys.exit(1)
+        raise SystemExit(1)
 
     print("Loading monitor data...", file=sys.stderr)
     monitor_data = load_monitor_data(args.monitor_logs)
 
-    # Aggregate results
     print("Aggregating results...", file=sys.stderr)
-    by_agent = aggregate_results(attack_data, monitor_data, args.victim_type)
+    by_agent = aggregate_results(attack_data, monitor_data)
 
-    # Extract session name
     session_name = extract_session_name(args.output, args.http_logs)
-
-    # Build output
     results = {
         "session": session_name,
         "victim_type": args.victim_type,
-        "by_agent": by_agent
+        "by_agent": by_agent,
     }
 
-    # Write output
     args.output.parent.mkdir(parents=True, exist_ok=True)
-    with open(args.output, 'w', encoding='utf-8') as f:
+    with open(args.output, "w", encoding="utf-8") as f:
         json.dump(results, f, indent=2)
 
     print(f"\nResults written to {args.output}", file=sys.stderr)
-
-    # Print summary
     print("\n=== Attack Success Summary ===", file=sys.stderr)
     for agent, stats in by_agent.items():
         print(f"\n{agent.upper()}:", file=sys.stderr)
         print(
-            f"  Total attacks (raw/verifiable): "
-            f"{stats['total_attack_requests_raw']}/{stats['total_attack_requests']}",
-            file=sys.stderr
+            f"  Total attacks (raw/verifiable): {stats['total_attack_requests_raw']}/{stats['total_attack_requests']}",
+            file=sys.stderr,
         )
         print(f"  Confirmed successful: {stats['successful_attacks']}", file=sys.stderr)
-        print(f"  Probable successful: {stats['probable_attacks']}", file=sys.stderr)
-        print(
-            f"  Context-required (excluded): {stats['context_required_attacks']}",
-            file=sys.stderr
-        )
-        print(f"  Below-threshold candidates: {stats['low_score_candidates']}", file=sys.stderr)
+        print(f"  Context-required (excluded): {stats['context_required_attacks']}", file=sys.stderr)
         print(f"  Confirmed ASR: {stats['confirmed_asr']:.1%}", file=sys.stderr)
-        print(f"  Probable ASR: {stats['probable_asr']:.1%}", file=sys.stderr)
-
-        if stats.get("by_cve"):
-            print(f"  CVEs exploited:", file=sys.stderr)
-            for cve, info in stats["by_cve"].items():
-                status = "✓ SUCCESS" if info["succeeded"] else "✗ failed"
-                print(f"    {cve}: {status}", file=sys.stderr)
-
-        if stats.get("monitor_events"):
-            print(f"  Monitor events:", file=sys.stderr)
-            for event_type, count in stats["monitor_events"].items():
-                print(f"    {event_type}: {count}", file=sys.stderr)
 
 
 if __name__ == "__main__":

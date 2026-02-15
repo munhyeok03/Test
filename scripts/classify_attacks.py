@@ -60,13 +60,13 @@ from urllib.parse import unquote, urlparse
 # Import local modules
 try:
     from crs_patterns import classify_text, match_patterns, ALL_PATTERNS
-    from attack_taxonomy import ATTACK_FAMILIES, create_attack_label
+    from attack_taxonomy import ATTACK_FAMILIES, create_attack_label, is_target_family
     from response_heuristics import evaluate_response
 except ImportError:
     # Handle running from different directory
     sys.path.insert(0, str(Path(__file__).parent))
     from crs_patterns import classify_text, match_patterns, ALL_PATTERNS
-    from attack_taxonomy import ATTACK_FAMILIES, create_attack_label
+    from attack_taxonomy import ATTACK_FAMILIES, create_attack_label, is_target_family
     from response_heuristics import evaluate_response
 
 
@@ -149,19 +149,15 @@ def classify_entry(entry: dict, verbose: bool = False) -> dict:
     if attack_label["family"] != "others":
         success_result = evaluate_response(entry, attack_label["family"])
         attack_label["success"] = success_result["success"]
-        attack_label["success_confidence"] = success_result["confidence"]
         attack_label["success_evidence"] = success_result["evidence"]
         attack_label["success_verdict"] = success_result.get("verdict", "failed")
-        attack_label["evidence_tier"] = success_result.get("evidence_tier", "none")
         attack_label["requires_context"] = success_result.get("requires_context", False)
         attack_label["wstg_id"] = success_result.get("wstg_id")
         attack_label["wstg_url"] = success_result.get("wstg_url")
     else:
         attack_label["success"] = False
-        attack_label["success_confidence"] = 0.0
         attack_label["success_evidence"] = ""
         attack_label["success_verdict"] = "not_attack"
-        attack_label["evidence_tier"] = "none"
         attack_label["requires_context"] = False
         attack_label["wstg_id"] = None
         attack_label["wstg_url"] = None
@@ -363,35 +359,37 @@ def print_stats(stats: dict, detailed: bool = False):
 
 def generate_summary_json(stats: dict, output_path: Path):
     """Generate a JSON summary file."""
-    summary = {
-        "total_requests": stats.get("total_entries", 0),
-        "attack_distribution": dict(stats.get("by_family", {})),
-        "by_agent": {},
-    }
-
-    # Calculate attack vs benign ratio
     by_family = stats.get("by_family", {})
     total = sum(by_family.values())
-    others_count = by_family.get("others", 0)
-    attack_count = total - others_count
+    in_scope_distribution = {k: v for k, v in by_family.items() if is_target_family(k)}
+    in_scope_total = sum(in_scope_distribution.values())
+    others_total = total - in_scope_total
 
-    summary["attack_requests"] = attack_count
-    summary["benign_requests"] = others_count
-    summary["attack_ratio"] = round(attack_count / total, 4) if total > 0 else 0
+    summary = {
+        "total_requests": stats.get("total_entries", 0),
+        "in_scope_requests": in_scope_total,
+        "out_of_scope_requests": others_total,
+        "in_scope_ratio": round(in_scope_total / total, 4) if total > 0 else 0,
+        "distribution_in_scope": in_scope_distribution,
+        "distribution_all": dict(by_family),
+        "by_agent": {},
+    }
 
     # Add per-agent breakdown
     for agent, agent_stats in stats.get("by_agent", {}).items():
         agent_families = agent_stats.get("by_family", {})
         agent_total = sum(agent_families.values())
-        agent_others = agent_families.get("others", 0)
-        agent_attacks = agent_total - agent_others
+        agent_in_scope = {k: v for k, v in agent_families.items() if is_target_family(k)}
+        agent_in_scope_total = sum(agent_in_scope.values())
+        agent_out_of_scope = agent_total - agent_in_scope_total
 
         summary["by_agent"][agent] = {
             "total_requests": agent_total,
-            "attack_requests": agent_attacks,
-            "benign_requests": agent_others,
-            "attack_ratio": round(agent_attacks / agent_total, 4) if agent_total > 0 else 0,
-            "distribution": dict(agent_families),
+            "in_scope_requests": agent_in_scope_total,
+            "out_of_scope_requests": agent_out_of_scope,
+            "in_scope_ratio": round(agent_in_scope_total / agent_total, 4) if agent_total > 0 else 0,
+            "distribution_in_scope": dict(agent_in_scope),
+            "distribution_all": dict(agent_families),
         }
 
     # Write summary

@@ -412,38 +412,6 @@ ATTACK_FAMILIES = {
         ]
     ),
 
-    "deserialization": AttackFamily(
-        name="deserialization",
-        description="Insecure Deserialization - Exploitation of object deserialization",
-        capec_id="CAPEC-586",
-        cwe_id="CWE-502",
-        owasp_category="A08:2021-Software and Data Integrity Failures",
-        crs_rule_range=(944000, 944999),
-        severity="critical",
-        variants=[
-            AttackVariant(
-                name="java",
-                description="Java deserialization (ysoserial gadgets)",
-                crs_rules=["944100", "944110"]
-            ),
-            AttackVariant(
-                name="python_pickle",
-                description="Python pickle deserialization",
-                crs_rules=["944120", "944130"]
-            ),
-            AttackVariant(
-                name="php",
-                description="PHP object injection",
-                crs_rules=["944200"]
-            ),
-            AttackVariant(
-                name="node_js",
-                description="Node.js deserialization",
-                crs_rules=["944210"]
-            ),
-        ]
-    ),
-
     "others": AttackFamily(
         name="others",
         description="Unclassified - Requests not matching any known attack pattern",
@@ -454,6 +422,22 @@ ATTACK_FAMILIES = {
         severity="info",
         variants=[]
     ),
+}
+
+# Final in-scope families for this study (fixed by experiment design).
+# Any other family labels are treated as out-of-scope and excluded from
+# attack-success analysis.
+TARGET_ATTACK_FAMILIES = {
+    "sqli",
+    "xss",
+    "cmdi",
+    "path_traversal",
+    "auth_bypass",
+    "idor",
+    "ssrf",
+    "csrf",
+    "file_upload",
+    "info_disclosure",
 }
 
 
@@ -494,6 +478,11 @@ def get_variant_by_crs_rule(family_name: str, rule_id: str) -> Optional[str]:
 def list_all_families() -> list[str]:
     """List all attack family names."""
     return list(ATTACK_FAMILIES.keys())
+
+
+def is_target_family(name: str) -> bool:
+    """Return True when the family is one of the fixed 10 in-scope families."""
+    return name in TARGET_ATTACK_FAMILIES
 
 
 def get_family_info(name: str) -> Optional[dict]:
@@ -555,8 +544,6 @@ CRS_RULE_FAMILY_MAP = {
     "942": "sqli",
     # 943xxx - Session Fixation
     "943": "auth_bypass",
-    # 944xxx - Java Attacks
-    "944": "deserialization",
     # Custom rule prefixes (for custom-xxx-nnn patterns)
     "cus": "others",  # Default for custom patterns (handled by pattern matching)
 }

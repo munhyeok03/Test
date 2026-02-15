@@ -894,57 +894,6 @@ INFO_DISCLOSURE_PATTERNS = [
 
 
 # =============================================================================
-# Deserialization Patterns (944xxx)
-# Based on REQUEST-944-APPLICATION-ATTACK-JAVA.conf and custom
-# =============================================================================
-
-DESERIALIZATION_PATTERNS = [
-    # 944100 - Java Serialization Attack
-    CRSPattern(
-        rule_id="944100",
-        pattern=r"(?:rO0AB|aced0005|AAAAAA|H4sIA|YWNlZDAwMDU)",
-        description="Java serialized object signature",
-        severity="critical"
-    ),
-    # 944110 - Java Deserialization Gadgets
-    CRSPattern(
-        rule_id="944110",
-        pattern=r"(?:org\.apache\.commons\.collections\.functors|org\.springframework\.beans\.factory|com\.sun\.org\.apache\.xalan)",
-        description="Known Java gadget chains",
-        severity="critical"
-    ),
-    # 944120 - Python Pickle
-    CRSPattern(
-        rule_id="944120",
-        pattern=r"(?:cposix|c__builtin__|csubprocess|cos\nsystem|c__main__)",
-        description="Python pickle exploitation",
-        severity="critical"
-    ),
-    # 944130 - Python YAML Deserialization
-    CRSPattern(
-        rule_id="944130",
-        pattern=r"(?:!!python/object|!!python/object/apply|!!python/object/new)",
-        description="Python YAML exploitation",
-        severity="critical"
-    ),
-    # 944200 - PHP Object Injection
-    CRSPattern(
-        rule_id="944200",
-        pattern=r'(?:O:\d+:"[^"]+":)',
-        description="PHP serialized object",
-        severity="critical"
-    ),
-    # 944210 - Node.js Deserialization
-    CRSPattern(
-        rule_id="944210",
-        pattern=r'(?:_$$ND_FUNC\$\$_|{"rce":|{"run":)',
-        description="Node.js serialize-javascript exploitation",
-        severity="critical"
-    ),
-]
-
-
-# =============================================================================
 # IDOR Patterns (Custom - Adversarial Context)
 # Based on OWASP WSTG-AUTHZ-04, CWE-639
 # In adversarial context, resource ID access patterns indicate IDOR attempts
@@ -1298,7 +1247,6 @@ ALL_PATTERNS = {
     "path_traversal": PATH_TRAVERSAL_PATTERNS,
     "ssrf": SSRF_PATTERNS,
     "info_disclosure": INFO_DISCLOSURE_PATTERNS,
-    "deserialization": DESERIALIZATION_PATTERNS,
     "auth_bypass": AUTH_BYPASS_PATTERNS,
     "file_upload": FILE_UPLOAD_PATTERNS,
     "idor": IDOR_PATTERNS,
@@ -1372,10 +1320,8 @@ def classify_text(text: str) -> dict:
             "anomaly_score": 0,
             "classification_threshold": DEFAULT_INBOUND_ANOMALY_THRESHOLD,
             "family_scores": {},
-            "candidate_family": None,
-            "candidate_anomaly_score": 0,
             "threshold_passed": False,
-            "classification_method": "crs_anomaly_scoring_v1",
+            "classification_method": "crs_anomaly_scoring_v2",
         }
 
     # Group by family
@@ -1406,7 +1352,7 @@ def classify_text(text: str) -> dict:
             len(family_matches[family_name]),
         )
 
-    # Highest-scored candidate regardless of threshold (kept for analysis traceability).
+    # Highest-scored family candidate before threshold gating.
     top_family = max(family_matches.keys(), key=family_score)
     top_score = family_scores[top_family]
 
@@ -1420,10 +1366,8 @@ def classify_text(text: str) -> dict:
             "anomaly_score": 0,
             "classification_threshold": DEFAULT_INBOUND_ANOMALY_THRESHOLD,
             "family_scores": family_scores,
-            "candidate_family": top_family,
-            "candidate_anomaly_score": top_score,
             "threshold_passed": False,
-            "classification_method": "crs_anomaly_scoring_v1",
+            "classification_method": "crs_anomaly_scoring_v2",
         }
 
     primary_family = top_family
@@ -1443,10 +1387,8 @@ def classify_text(text: str) -> dict:
         "anomaly_score": family_scores[primary_family],
         "classification_threshold": DEFAULT_INBOUND_ANOMALY_THRESHOLD,
         "family_scores": family_scores,
-        "candidate_family": primary_family,
-        "candidate_anomaly_score": family_scores[primary_family],
         "threshold_passed": True,
-        "classification_method": "crs_anomaly_scoring_v1",
+        "classification_method": "crs_anomaly_scoring_v2",
     }
 
 
@@ -1472,8 +1414,8 @@ if __name__ == "__main__":
         ("nikto", "others"),
         ("/.git/config", "info_disclosure"),
         ("/.env", "info_disclosure"),
-        # Deserialization
-        ("rO0ABXNy", "deserialization"),
+        # Out-of-scope families are intentionally folded into `others`
+        ("rO0ABXNy", "others"),
         # IDOR (new)
         ("/api/users/123", "others"),
         ("/api/v1/order/456", "others"),

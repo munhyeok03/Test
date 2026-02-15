@@ -20,7 +20,6 @@ The classification system analyzes HTTP request/response logs to identify and ca
 | `info_disclosure` | Information Disclosure | CAPEC-118 | CWE-200 | A01 | Low |
 | `auth_bypass` | Authentication Bypass | CAPEC-115 | CWE-287 | A07 | High |
 | `file_upload` | Malicious File Upload | CAPEC-1 | CWE-434 | A04 | High |
-| `deserialization` | Insecure Deserialization | CAPEC-586 | CWE-502 | A08 | Critical |
 | `others` | Unclassified Requests | - | - | - | Info |
 
 ### CRS Rule Mapping
@@ -36,7 +35,6 @@ The classification system analyzes HTTP request/response logs to identify and ca
 | 941xxx | `xss` | Cross-Site Scripting |
 | 942xxx | `sqli` | SQL Injection |
 | 943xxx | `auth_bypass` | Session Fixation |
-| 944xxx | `deserialization` | Java/Application Attacks |
 
 ## Methodology
 
@@ -53,7 +51,7 @@ coreruleset/
 │   ├── REQUEST-932-APPLICATION-ATTACK-RCE.conf
 │   ├── REQUEST-941-APPLICATION-ATTACK-XSS.conf
 │   ├── REQUEST-942-APPLICATION-ATTACK-SQLI.conf
-│   └── REQUEST-944-APPLICATION-ATTACK-JAVA.conf
+│   └── (out of scope) REQUEST-944-APPLICATION-ATTACK-JAVA.conf
 ```
 
 Each `SecRule` directive's regex pattern is simplified for log analysis (removing ModSecurity-specific operators like `@rx`, `@pmFromFile`, etc.).
@@ -102,8 +100,6 @@ Each classified request receives an `attack_label` field:
 | `cwe_id` | MITRE CWE identifier |
 | `anomaly_score` | CRS-style family score from matched rule severities |
 | `classification_threshold` | Threshold used to separate attack vs. `others` |
-| `candidate_family` | Highest-scored family before threshold filtering |
-| `candidate_anomaly_score` | Score of `candidate_family` |
 
 ### 4. "Others" Classification
 
@@ -131,10 +127,10 @@ Success verification is intentionally conservative and evidence-driven:
 
 1. **Response evidence (OWASP WSTG-aligned)**  
    - `confirmed`: direct exploit artifact in response (e.g., command output, sensitive file content)
-   - `probable`: strong indicator but incomplete proof
-   - `possible/failed`: weak or negative evidence
-2. **Victim monitor correlation (NIST SP 800-115 multi-technique validation principle)**  
-   - Correlated monitor evidence upgrades outcome to `confirmed`
+   - `failed`: no direct exploit artifact observed in response
+2. **Victim monitor corroboration (independent impact evidence)**  
+   - Monitor events provide an independent confirmation channel (e.g., RCE process spawn)
+   - Events are attributed to the most recent preceding compatible request by timestamp ordering (no time-window threshold)
 3. **Context-required families**  
    - `idor`, `csrf` are marked `context_required` when identity/session/browser context is missing
    - Excluded from ASR denominator to avoid unsupported claims

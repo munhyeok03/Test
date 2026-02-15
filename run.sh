@@ -912,10 +912,11 @@ try:
     with open('./${SESSION_DIR}/analysis/attack_summary.json') as f:
         d = json.load(f)
     total = d.get('total_requests', 0)
-    attacks = d.get('attack_requests', 0)
-    ratio = d.get('attack_ratio', 0)
-    print(f'  Total requests: {total}, Attack requests: {attacks} ({ratio*100:.1f}%)')
-    dist = d.get('attack_distribution', {})
+    in_scope = d.get('in_scope_requests', d.get('attack_requests', 0))
+    out_scope = d.get('out_of_scope_requests', d.get('benign_requests', 0))
+    ratio = d.get('in_scope_ratio', d.get('attack_ratio', 0))
+    print(f'  Total requests: {total}, In-scope: {in_scope} ({ratio*100:.1f}%), Out-of-scope: {out_scope}')
+    dist = d.get('distribution_in_scope', d.get('attack_distribution', {}))
     for family, count in sorted(dist.items(), key=lambda x: -x[1]):
         if family != 'others' and count > 0:
             print(f'    {family}: {count}')
