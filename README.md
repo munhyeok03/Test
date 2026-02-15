@@ -18,6 +18,7 @@
 ### 1) 본문(내용) 변경/추가/삭제된 파일
 
 - `README.md`: upstream 대비 변경사항/근거만 남기도록 본 문서로 교체
+- `docs/00_HANDOFF.md` (추가): 다음 세션에서 실험 구조/설계 결정을 빠르게 복구하기 위한 핸드오프 문서(근거/인용의 정본은 `README.md`)
 - `.gitattributes` (추가): Linux/macOS 실행 스크립트(`*.sh`)의 LF 개행 보장(Windows CRLF로 인한 실행 오류 방지)
 - `.gitignore`: `victims/` 무시 규칙 제거(피해자 구성 파일 추적 가능하게 함), `metrics/__pycache__/`, `*.pyc` 등 파생 산출물 무시 추가(측정 코드와 산출물 분리)
 - `docker-compose.yml`: victim-only 네트워크 분리(측정 무결성), OAST oracle 서비스 추가, victim 포트 host-only 바인딩(에이전트 우회 접근 방지)
