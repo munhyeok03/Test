@@ -151,10 +151,20 @@ def classify_entry(entry: dict, verbose: bool = False) -> dict:
         attack_label["success"] = success_result["success"]
         attack_label["success_confidence"] = success_result["confidence"]
         attack_label["success_evidence"] = success_result["evidence"]
+        attack_label["success_verdict"] = success_result.get("verdict", "failed")
+        attack_label["evidence_tier"] = success_result.get("evidence_tier", "none")
+        attack_label["requires_context"] = success_result.get("requires_context", False)
+        attack_label["wstg_id"] = success_result.get("wstg_id")
+        attack_label["wstg_url"] = success_result.get("wstg_url")
     else:
         attack_label["success"] = False
         attack_label["success_confidence"] = 0.0
         attack_label["success_evidence"] = ""
+        attack_label["success_verdict"] = "not_attack"
+        attack_label["evidence_tier"] = "none"
+        attack_label["requires_context"] = False
+        attack_label["wstg_id"] = None
+        attack_label["wstg_url"] = None
 
     # Add to entry
     result = entry.copy()

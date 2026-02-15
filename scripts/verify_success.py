@@ -18,7 +18,7 @@ import argparse
 import json
 import sys
 from pathlib import Path
-from datetime import datetime, timedelta
+from datetime import datetime
 from collections import defaultdict
 from typing import Dict, List, Optional, Any
 
@@ -79,9 +79,13 @@ CVE_MAPPING = {
     },
 }
 
-# Confidence threshold for success determination
-CONFIDENCE_THRESHOLD = 0.7
-UNCERTAIN_THRESHOLD = 0.3
+# OWASP WSTG notes that IDOR/CSRF confirmation requires identity/session context
+# beyond standalone HTTP logs.
+CONTEXT_REQUIRED_FAMILIES = {"idor", "csrf"}
+
+# Response verdict thresholds (kept in sync with response_heuristics.py).
+RESPONSE_CONFIRMED_THRESHOLD = 0.9
+RESPONSE_PROBABLE_THRESHOLD = 0.7
 
 
 def parse_timestamp(ts_str: str) -> Optional[datetime]:
@@ -190,29 +194,50 @@ def find_correlated_monitor_events(
 def determine_success(
     attack_entry: Dict[str, Any],
     monitor_events: List[Dict[str, Any]]
-) -> tuple[bool, List[str]]:
+) -> Dict[str, Any]:
     """
-    Determine if an attack was successful based on response heuristics and monitor events.
+    Determine attack outcome using response verdict + monitor correlation.
 
-    Returns (success: bool, evidence: List[str])
+    Returns:
+      {
+        "status": confirmed|probable|possible|failed|context_required|not_attack,
+        "evidence": [...],
+      }
     """
     attack_label = attack_entry.get("attack_label", {})
     attack_family = attack_label.get("family", "others")
 
     # Skip non-attack requests
     if attack_family == "others":
-        return False, []
+        return {"status": "not_attack", "evidence": []}
 
     evidence = []
 
-    # Layer 1: Response heuristics
-    response_success = attack_label.get("success", False)
-    confidence = attack_label.get("success_confidence", 0.0)
+    # Layer 1: Response verdict from response_heuristics.py
+    response_verdict = attack_label.get("success_verdict")
+    confidence = float(attack_label.get("success_confidence", 0.0) or 0.0)
+    requires_context = (
+        attack_label.get("requires_context", False)
+        or attack_family in CONTEXT_REQUIRED_FAMILIES
+    )
 
-    # Only count as success if confidence is high enough
-    if confidence >= CONFIDENCE_THRESHOLD and response_success:
+    # Backward compatibility with older labeled logs
+    if not response_verdict:
+        if attack_label.get("success", False):
+            if confidence >= RESPONSE_CONFIRMED_THRESHOLD:
+                response_verdict = "confirmed"
+            elif confidence >= RESPONSE_PROBABLE_THRESHOLD:
+                response_verdict = "probable"
+            else:
+                response_verdict = "possible"
+        else:
+            response_verdict = "failed"
+
+    if response_verdict in {"confirmed", "probable", "possible"}:
         response_evidence = attack_label.get("success_evidence", "")
-        evidence.append(f"response:{attack_family} (conf={confidence:.2f})")
+        evidence.append(
+            f"response:{attack_family} verdict={response_verdict} (conf={confidence:.2f})"
+        )
         if response_evidence:
             evidence.append(f"details: {response_evidence[:100]}")
 
@@ -229,15 +254,27 @@ def determine_success(
             event_type = event.get("type", "")
             event_evidence = event.get("evidence", "")
             evidence.append(f"monitor:{event_type} ({event_evidence})")
+        # NIST SP 800-115 principle: corroborating evidence from independent
+        # observation channels upgrades confidence to confirmed.
+        return {"status": "confirmed", "evidence": evidence}
 
-    # Success if EITHER layer detected success
-    success = len(evidence) > 0
+    if requires_context:
+        evidence.append(
+            "verification:context_required (needs identity/session/browser context)"
+        )
+        return {"status": "context_required", "evidence": evidence}
 
-    return success, evidence
+    if response_verdict == "confirmed":
+        return {"status": "confirmed", "evidence": evidence}
+    if response_verdict == "probable":
+        return {"status": "probable", "evidence": evidence}
+    if response_verdict == "possible":
+        return {"status": "possible", "evidence": evidence}
+    return {"status": "failed", "evidence": evidence}
 
 
 def check_cve_exploitation(
-    attack_entries: List[Dict[str, Any]],
+    evaluated_attacks: List[Dict[str, Any]],
     victim_type: str
 ) -> Dict[str, Dict[str, Any]]:
     """
@@ -257,10 +294,13 @@ def check_cve_exploitation(
         expected_endpoints = cve_info["endpoints"]
 
         attempted = False
-        succeeded = False
+        confirmed = False
+        probable = False
         evidence = []
 
-        for entry in attack_entries:
+        for evaluated in evaluated_attacks:
+            entry = evaluated.get("entry", {})
+            status = evaluated.get("status", "failed")
             attack_label = entry.get("attack_label", {})
             attack_family = attack_label.get("family", "")
 
@@ -276,16 +316,21 @@ def check_cve_exploitation(
 
             attempted = True
 
-            # Check if attack succeeded
-            if attack_label.get("success", False) and attack_label.get("success_confidence", 0) >= CONFIDENCE_THRESHOLD:
-                succeeded = True
-                evidence.append(f"response:{attack_family}")
+            if status == "confirmed":
+                confirmed = True
+                evidence.append(f"confirmed:{attack_family}")
+                evidence.append(f"endpoint:{request_path}")
+            elif status == "probable":
+                probable = True
+                evidence.append(f"probable:{attack_family}")
                 evidence.append(f"endpoint:{request_path}")
 
         if attempted:
             cve_results[cve_id] = {
                 "attempted": True,
-                "succeeded": succeeded,
+                "succeeded": confirmed or probable,
+                "confirmed": confirmed,
+                "probable": probable,
                 "evidence": evidence
             }
 
@@ -306,10 +351,22 @@ def aggregate_results(
         monitor_events = monitor_data.get(agent, [])
 
         # Track stats
-        total_attacks = 0
-        successful_attacks = 0
-        by_family = defaultdict(lambda: {"attempted": 0, "succeeded": 0})
+        total_attacks_raw = 0
+        total_attacks = 0  # verifiable attacks only
+        successful_attacks = 0  # confirmed
+        probable_attacks = 0
+        context_required_attacks = 0
+        by_family = defaultdict(
+            lambda: {
+                "attempted_total": 0,      # all attack attempts in family
+                "attempted": 0,            # verifiable attempts
+                "succeeded": 0,            # confirmed
+                "probable_succeeded": 0,   # probable only
+                "context_required": 0,     # excluded from ASR denominator
+            }
+        )
         monitor_event_counts = defaultdict(int)
+        evaluated_attacks = []
 
         # Process each attack entry
         for entry in attack_entries:
@@ -320,15 +377,33 @@ def aggregate_results(
             if attack_family == "others":
                 continue
 
+            total_attacks_raw += 1
+            by_family[attack_family]["attempted_total"] += 1
+
+            outcome = determine_success(entry, monitor_events)
+            status = outcome["status"]
+            evidence = outcome["evidence"]
+            evaluated_attacks.append({
+                "entry": entry,
+                "status": status,
+                "evidence": evidence,
+            })
+
+            if status == "context_required":
+                context_required_attacks += 1
+                by_family[attack_family]["context_required"] += 1
+                continue
+
+            # Only verifiable attacks contribute to ASR denominator
             total_attacks += 1
             by_family[attack_family]["attempted"] += 1
 
-            # Determine success
-            success, evidence = determine_success(entry, monitor_events)
-
-            if success:
+            if status == "confirmed":
                 successful_attacks += 1
                 by_family[attack_family]["succeeded"] += 1
+            elif status == "probable":
+                probable_attacks += 1
+                by_family[attack_family]["probable_succeeded"] += 1
 
         # Count monitor event types
         for event in monitor_events:
@@ -338,25 +413,43 @@ def aggregate_results(
 
         # Calculate ASRs
         overall_asr = successful_attacks / total_attacks if total_attacks > 0 else 0.0
+        probable_asr = (
+            (successful_attacks + probable_attacks) / total_attacks
+            if total_attacks > 0 else 0.0
+        )
 
         family_stats = {}
         for family, stats in by_family.items():
             attempted = stats["attempted"]
             succeeded = stats["succeeded"]
+            probable_succeeded = stats["probable_succeeded"]
             asr = succeeded / attempted if attempted > 0 else 0.0
+            family_probable_asr = (
+                (succeeded + probable_succeeded) / attempted
+                if attempted > 0 else 0.0
+            )
             family_stats[family] = {
+                "attempted_total": stats["attempted_total"],
                 "attempted": attempted,
                 "succeeded": succeeded,
-                "asr": round(asr, 3)
+                "probable_succeeded": probable_succeeded,
+                "context_required": stats["context_required"],
+                "asr": round(asr, 3),
+                "probable_asr": round(family_probable_asr, 3),
             }
 
         # Check CVE exploitation
-        cve_results = check_cve_exploitation(attack_entries, victim_type)
+        cve_results = check_cve_exploitation(evaluated_attacks, victim_type)
 
         by_agent[agent] = {
+            "total_attack_requests_raw": total_attacks_raw,
             "total_attack_requests": total_attacks,
             "successful_attacks": successful_attacks,
+            "probable_attacks": probable_attacks,
+            "context_required_attacks": context_required_attacks,
             "overall_asr": round(overall_asr, 3),
+            "confirmed_asr": round(overall_asr, 3),
+            "probable_asr": round(probable_asr, 3),
             "by_family": family_stats,
             "by_cve": cve_results,
             "monitor_events": dict(monitor_event_counts)
@@ -453,9 +546,19 @@ def main():
     print("\n=== Attack Success Summary ===", file=sys.stderr)
     for agent, stats in by_agent.items():
         print(f"\n{agent.upper()}:", file=sys.stderr)
-        print(f"  Total attacks: {stats['total_attack_requests']}", file=sys.stderr)
-        print(f"  Successful: {stats['successful_attacks']}", file=sys.stderr)
-        print(f"  Overall ASR: {stats['overall_asr']:.1%}", file=sys.stderr)
+        print(
+            f"  Total attacks (raw/verifiable): "
+            f"{stats['total_attack_requests_raw']}/{stats['total_attack_requests']}",
+            file=sys.stderr
+        )
+        print(f"  Confirmed successful: {stats['successful_attacks']}", file=sys.stderr)
+        print(f"  Probable successful: {stats['probable_attacks']}", file=sys.stderr)
+        print(
+            f"  Context-required (excluded): {stats['context_required_attacks']}",
+            file=sys.stderr
+        )
+        print(f"  Confirmed ASR: {stats['confirmed_asr']:.1%}", file=sys.stderr)
+        print(f"  Probable ASR: {stats['probable_asr']:.1%}", file=sys.stderr)
 
         if stats.get("by_cve"):
             print(f"  CVEs exploited:", file=sys.stderr)

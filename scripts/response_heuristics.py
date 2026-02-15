@@ -46,6 +46,65 @@ class FamilyHeuristic:
     check_payload_reflection: bool = False
 
 
+# Families where OWASP WSTG requires additional context (identity/session/browser)
+# that is not available from HTTP request/response pairs alone.
+CONTEXT_REQUIRED_FAMILIES = {"idor", "csrf"}
+
+# OWASP Web Security Testing Guide references used to ground family criteria.
+WSTG_REFERENCE_MAP = {
+    "sqli": {
+        "id": "WSTG-INPV-05",
+        "url": "https://owasp.org/www-project-web-security-testing-guide/latest/4-Web_Application_Security_Testing/07-Input_Validation_Testing/05-Testing_for_SQL_Injection",
+    },
+    "xss": {
+        "id": "WSTG-INPV-01",
+        "url": "https://owasp.org/www-project-web-security-testing-guide/latest/4-Web_Application_Security_Testing/07-Input_Validation_Testing/01-Testing_for_Reflected_Cross_Site_Scripting",
+    },
+    "cmdi": {
+        "id": "WSTG-INPV-12",
+        "url": "https://owasp.org/www-project-web-security-testing-guide/latest/4-Web_Application_Security_Testing/07-Input_Validation_Testing/12-Testing_for_Command_Injection",
+    },
+    "path_traversal": {
+        "id": "WSTG-ATHZ-01",
+        "url": "https://owasp.org/www-project-web-security-testing-guide/latest/4-Web_Application_Security_Testing/05-Authorization_Testing/01-Testing_Directory_Traversal_File_Include",
+    },
+    "ssrf": {
+        "id": "WSTG-INPV-19",
+        "url": "https://owasp.org/www-project-web-security-testing-guide/latest/4-Web_Application_Security_Testing/07-Input_Validation_Testing/19-Testing_for_Server_Side_Request_Forgery",
+    },
+    "auth_bypass": {
+        "id": "WSTG-ATHN-03",
+        "url": "https://owasp.org/www-project-web-security-testing-guide/latest/4-Web_Application_Security_Testing/04-Authentication_Testing/03-Testing_for_Weak_Lock_Out_Mechanism",
+    },
+    "idor": {
+        "id": "WSTG-ATHZ-04",
+        "url": "https://owasp.org/www-project-web-security-testing-guide/latest/4-Web_Application_Security_Testing/05-Authorization_Testing/04-Testing_for_Insecure_Direct_Object_References",
+    },
+    "csrf": {
+        "id": "WSTG-SESS-05",
+        "url": "https://owasp.org/www-project-web-security-testing-guide/latest/4-Web_Application_Security_Testing/06-Session_Management_Testing/05-Testing_for_Cross_Site_Request_Forgery",
+    },
+    "info_disclosure": {
+        "id": "WSTG-CONF-01",
+        "url": "https://owasp.org/www-project-web-security-testing-guide/latest/4-Web_Application_Security_Testing/02-Configuration_and_Deployment_Management_Testing/01-Test_Network_Infrastructure_Configuration",
+    },
+    "file_upload": {
+        "id": "WSTG-BUSL-08",
+        "url": "https://owasp.org/www-project-web-security-testing-guide/latest/4-Web_Application_Security_Testing/10-Business_Logic_Testing/08-Test_Upload_of_Unexpected_File_Types",
+    },
+    "deserialization": {
+        "id": "WSTG-INPV-11",
+        "url": "https://owasp.org/www-project-web-security-testing-guide/latest/4-Web_Application_Security_Testing/07-Input_Validation_Testing/11-Testing_for_Code_Injection",
+    },
+}
+
+# Conservative verdict thresholds:
+# - confirmed: high-confidence proof artifact
+# - probable: strong indicator but not full proof
+VERDICT_CONFIRMED_THRESHOLD = 0.9
+VERDICT_PROBABLE_THRESHOLD = 0.7
+
+
 # =============================================================================
 # Family-Specific Heuristics
 # =============================================================================
@@ -647,6 +706,17 @@ def _check_payload_reflection(entry: dict) -> Optional[dict]:
     return None
 
 
+def _confidence_to_tier(confidence: float) -> str:
+    """Map confidence score to evidence tier."""
+    if confidence >= VERDICT_CONFIRMED_THRESHOLD:
+        return "strong"
+    if confidence >= VERDICT_PROBABLE_THRESHOLD:
+        return "moderate"
+    if confidence > 0:
+        return "weak"
+    return "none"
+
+
 def evaluate_response(entry: dict, family: str) -> dict:
     """
     Evaluate an HTTP response to determine if an attack was successful.
@@ -657,13 +727,28 @@ def evaluate_response(entry: dict, family: str) -> dict:
 
     Returns:
         dict with keys:
-            - success: bool (True if confidence >= 0.7)
+            - success: bool (True only for confirmed/probable)
             - confidence: float (0.0-1.0)
-            - evidence: str (description of what was found)
+            - evidence: str
+            - verdict: confirmed | probable | possible | failed | context_required
+            - evidence_tier: strong | moderate | weak | none
+            - requires_context: bool
+            - wstg_id / wstg_url: reference metadata
     """
     heuristic = FAMILY_HEURISTICS.get(family)
+    wstg_ref = WSTG_REFERENCE_MAP.get(family, {})
+
     if not heuristic:
-        return {"success": False, "confidence": 0.0, "evidence": "No heuristic for family"}
+        return {
+            "success": False,
+            "confidence": 0.0,
+            "evidence": "No heuristic for family",
+            "verdict": "failed",
+            "evidence_tier": "none",
+            "requires_context": False,
+            "wstg_id": wstg_ref.get("id"),
+            "wstg_url": wstg_ref.get("url"),
+        }
 
     response = entry.get("response", {})
     status_code = response.get("status_code", 0)
@@ -725,40 +810,62 @@ def evaluate_response(entry: dict, family: str) -> dict:
                 "matched": True,
             }
 
-    # Determine final result
+    success_confidence = 0.0
+    evidence = "No success indicators found"
+    verdict = "failed"
+
+    # If both matched, require success signal to be stronger than failure signal.
     if best_success["matched"] and best_failure["matched"]:
-        # Both matched - higher confidence wins
         if best_success["confidence"] > best_failure["confidence"]:
-            final_confidence = best_success["confidence"] * 0.8  # Discount for conflicting signals
-            return {
-                "success": final_confidence >= 0.7,
-                "confidence": round(final_confidence, 2),
-                "evidence": best_success["evidence"],
-            }
+            success_confidence = max(0.0, best_success["confidence"] - 0.1)
+            evidence = (
+                f"{best_success['evidence']} "
+                "(conflicting failure indicators present)"
+            )
         else:
-            return {
-                "success": False,
-                "confidence": round(1.0 - best_failure["confidence"], 2),
-                "evidence": f"Attack likely failed: {best_failure['evidence']}",
-            }
+            evidence = f"Attack likely failed: {best_failure['evidence']}"
     elif best_success["matched"]:
-        return {
-            "success": best_success["confidence"] >= 0.7,
-            "confidence": round(best_success["confidence"], 2),
-            "evidence": best_success["evidence"],
-        }
+        success_confidence = best_success["confidence"]
+        evidence = best_success["evidence"]
     elif best_failure["matched"]:
+        evidence = f"Attack likely failed: {best_failure['evidence']}"
+
+    # OWASP WSTG context requirements: these families cannot be confirmed with
+    # HTTP logs alone because user/session/authorization context is required.
+    if family in CONTEXT_REQUIRED_FAMILIES:
         return {
             "success": False,
-            "confidence": round(1.0 - best_failure["confidence"], 2),
-            "evidence": f"Attack likely failed: {best_failure['evidence']}",
+            "confidence": round(success_confidence, 2),
+            "evidence": (
+                f"{evidence} | Context required for confirmation "
+                "(identity/session verification)"
+            ),
+            "verdict": "context_required",
+            "evidence_tier": _confidence_to_tier(success_confidence),
+            "requires_context": True,
+            "wstg_id": wstg_ref.get("id"),
+            "wstg_url": wstg_ref.get("url"),
         }
+
+    if success_confidence >= VERDICT_CONFIRMED_THRESHOLD:
+        verdict = "confirmed"
+    elif success_confidence >= VERDICT_PROBABLE_THRESHOLD:
+        verdict = "probable"
+    elif success_confidence > 0:
+        verdict = "possible"
     else:
-        return {
-            "success": False,
-            "confidence": 0.0,
-            "evidence": "No success or failure indicators found",
-        }
+        verdict = "failed"
+
+    return {
+        "success": verdict in {"confirmed", "probable"},
+        "confidence": round(success_confidence, 2),
+        "evidence": evidence,
+        "verdict": verdict,
+        "evidence_tier": _confidence_to_tier(success_confidence),
+        "requires_context": False,
+        "wstg_id": wstg_ref.get("id"),
+        "wstg_url": wstg_ref.get("url"),
+    }
 
 
 if __name__ == "__main__":

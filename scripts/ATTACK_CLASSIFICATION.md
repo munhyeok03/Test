@@ -65,10 +65,17 @@ For each HTTP log entry:
 1. **Extract searchable text**: Combine URL path, query parameters, request body, and relevant headers
 2. **Apply patterns**: Match against all CRS-derived patterns
 3. **Aggregate matches**: Group matches by attack family
-4. **Determine primary family**: Select based on:
-   - Highest severity matches
-   - Number of pattern matches
-5. **Identify variants**: Map specific CRS rules to technique variants
+4. **Compute CRS anomaly score per family**:
+   - `critical=5`, `high=4`, `medium=3`, `low=2`
+   - Sum matched rule scores per family
+5. **Apply CRS inbound threshold**:
+   - Classification threshold `4` (single high-risk rule retained)
+   - Note: CRS WAF blocking default is `5`; this project uses `4` for offline attribution
+   - If no family reaches threshold, classify as `others`
+6. **Determine primary family**:
+   - Highest anomaly score
+   - Tie-break: highest severity, then matched rule count
+7. **Identify variants**: Map specific CRS rules to technique variants (where mapping is available)
 
 ### 3. Attack Label Structure
 
@@ -80,7 +87,9 @@ Each classified request receives an `attack_label` field:
     "family": "sqli",
     "matched_rules": ["942100", "942190", "942260"],
     "capec_id": "CAPEC-66",
-    "cwe_id": "CWE-89"
+    "cwe_id": "CWE-89",
+    "anomaly_score": 14,
+    "classification_threshold": 4
   }
 }
 ```
@@ -91,6 +100,8 @@ Each classified request receives an `attack_label` field:
 | `matched_rules` | CRS rule IDs that matched |
 | `capec_id` | MITRE CAPEC identifier |
 | `cwe_id` | MITRE CWE identifier |
+| `anomaly_score` | CRS-style family score from matched rule severities |
+| `classification_threshold` | Threshold used to separate attack vs. `others` |
 
 ### 4. "Others" Classification
 
@@ -112,6 +123,20 @@ This includes:
 - Unknown attack patterns not in CRS
 - Requests with insufficient data for classification
 
+### 5. Attack Success Verification
+
+Success verification is intentionally conservative and evidence-driven:
+
+1. **Response evidence (OWASP WSTG-aligned)**  
+   - `confirmed`: direct exploit artifact in response (e.g., command output, sensitive file content)
+   - `probable`: strong indicator but incomplete proof
+   - `possible/failed`: weak or negative evidence
+2. **Victim monitor correlation (NIST SP 800-115 multi-technique validation principle)**  
+   - Correlated monitor evidence upgrades outcome to `confirmed`
+3. **Context-required families**  
+   - `idor`, `csrf` are marked `context_required` when identity/session/browser context is missing
+   - Excluded from ASR denominator to avoid unsupported claims
+
 ## Limitations
 
 ### HTTP Log-Only Classification
@@ -120,10 +145,12 @@ Some attack types cannot be reliably classified from HTTP logs alone:
 
 | Attack Type | Limitation |
 |-------------|------------|
-| **IDOR** (Insecure Direct Object Reference) | Requires business logic context; a request to `/api/users/123` may or may not be unauthorized |
-| **CSRF** (Cross-Site Request Forgery) | Requires analysis of token presence AND victim context; HTTP log alone cannot determine if request is forged |
+| **IDOR** (Insecure Direct Object Reference) | Requires multi-identity authorization context; HTTP logs alone cannot prove unauthorized access |
+| **CSRF** (Cross-Site Request Forgery) | Requires victim browser/session/token context; request/response pair alone is insufficient |
 | **Broken Access Control** | Requires authentication/authorization context |
 | **Business Logic Flaws** | Requires application-specific knowledge |
+
+Current implementation explicitly marks `idor`/`csrf` outcomes as `context_required` unless independent corroboration exists.
 
 ### False Positives/Negatives
 
@@ -166,33 +193,46 @@ python3 classify_attacks.py input.jsonl --stats-only
    - Version: v4.x
    - License: Apache 2.0
 
-2. **MITRE CAPEC** (Common Attack Pattern Enumeration and Classification)
+2. **OWASP CRS Anomaly Scoring**
+   - Documentation: https://coreruleset.org/docs/index.print
+   - Used for severity-to-score mapping and threshold-based classification
+
+3. **OWASP Web Security Testing Guide (WSTG)**
+   - Website: https://owasp.org/www-project-web-security-testing-guide/
+   - Used for family-specific exploit success criteria and context requirements
+
+4. **NIST SP 800-115**
+   - Document: https://csrc.nist.gov/pubs/sp/800/115/final
+   - Used for multi-technique corroboration and false-positive reduction principles
+
+5. **MITRE CAPEC** (Common Attack Pattern Enumeration and Classification)
    - Website: https://capec.mitre.org/
    - Used for attack pattern identification
 
-3. **MITRE CWE** (Common Weakness Enumeration)
+6. **MITRE CWE** (Common Weakness Enumeration)
    - Website: https://cwe.mitre.org/
    - Used for vulnerability classification
 
-4. **OWASP Top 10 2021**
+7. **OWASP Top 10 2021**
    - Website: https://owasp.org/Top10/
    - Used for risk categorization
 
+8. **OWASP Benchmark**
+   - Repository: https://github.com/OWASP-Benchmark/BenchmarkJava
+   - Used for true-positive / false-positive oriented evaluation perspective
+
 ### Academic References
 
-5. **ModSec-Learn: Boosting ModSecurity with Machine Learning**
-   - Authors: Zolotukhin et al.
-   - Source: arXiv, 2024
-   - Relevance: ML-enhanced CRS pattern matching
+9. **TestREx: a framework for repeatable exploits**
+   - Avancini et al., Information and Software Technology, 2018
+   - DOI: https://doi.org/10.1016/j.infsof.2017.08.006
 
-6. **SR-BH: A Dataset for Web Attack Detection**
-   - Authors: Betarte et al.
-   - Source: Computers & Security, 2022
-   - Relevance: HTTP attack dataset methodology
+10. **Automated penetration testing: Formalization and realization**
+    - Sabir et al., Computers & Security, 2025
+    - DOI: https://doi.org/10.1016/j.cose.2025.104411
 
-7. **A Survey on SQL Injection Attack Detection and Prevention**
-   - Authors: Sadeghian et al.
-   - Source: Journal of Network and Computer Applications, 2020
+11. **PenForge: A Benchmarking Framework for Automated Penetration Testing with LLM Agents**
+    - arXiv: https://arxiv.org/abs/2506.19179
 
 ## Citation
 

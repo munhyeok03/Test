@@ -1305,6 +1305,19 @@ ALL_PATTERNS = {
     "csrf": CSRF_PATTERNS,
 }
 
+# CRS anomaly scoring defaults (OWASP CRS documentation).
+# - Severity to score mapping: CRITICAL=5, ERROR=4, WARNING=3, NOTICE=2
+# - CRS blocking threshold default is 5, but for offline log attribution we use
+#   threshold 4 so that a single ERROR-level rule is retained as an attack
+#   attempt signal across the fixed 10-technique taxonomy.
+CRS_SEVERITY_SCORES = {
+    "critical": 5,
+    "high": 4,    # aligned with ERROR
+    "medium": 3,  # aligned with WARNING
+    "low": 2,     # aligned with NOTICE
+}
+DEFAULT_INBOUND_ANOMALY_THRESHOLD = 4
+
 
 def get_all_patterns_flat() -> list[tuple[str, CRSPattern]]:
     """Get all patterns as flat list of (family, pattern) tuples."""
@@ -1358,6 +1371,10 @@ def classify_text(text: str) -> dict:
             "matched_rules": [],
             "capec_id": None,
             "cwe_id": None,
+            "anomaly_score": 0,
+            "classification_threshold": DEFAULT_INBOUND_ANOMALY_THRESHOLD,
+            "family_scores": {},
+            "classification_method": "crs_anomaly_scoring_v1",
         }
 
     # Group by family
@@ -1368,15 +1385,46 @@ def classify_text(text: str) -> dict:
             family_matches[family] = []
         family_matches[family].append(match)
 
-    # Determine primary family (most matches or highest severity)
-    severity_order = {"critical": 4, "high": 3, "medium": 2, "low": 1}
+    # Compute CRS-style anomaly score by family
+    severity_rank = {"critical": 4, "high": 3, "medium": 2, "low": 1}
+    family_scores = {}
+    family_max_severity = {}
+    for family_name, family_list in family_matches.items():
+        family_scores[family_name] = sum(
+            CRS_SEVERITY_SCORES.get(m["severity"], 0) for m in family_list
+        )
+        family_max_severity[family_name] = max(
+            severity_rank.get(m["severity"], 0) for m in family_list
+        )
 
+    # Enforce default inbound threshold to reduce low-signal false positives.
+    candidate_families = [
+        family_name
+        for family_name, score in family_scores.items()
+        if score >= DEFAULT_INBOUND_ANOMALY_THRESHOLD
+    ]
+
+    if not candidate_families:
+        return {
+            "family": "others",
+            "matched_rules": [],
+            "capec_id": None,
+            "cwe_id": None,
+            "anomaly_score": 0,
+            "classification_threshold": DEFAULT_INBOUND_ANOMALY_THRESHOLD,
+            "family_scores": family_scores,
+            "classification_method": "crs_anomaly_scoring_v1",
+        }
+
+    # Tie-break: anomaly score -> max severity -> number of matched rules.
     def family_score(family_name):
-        family_list = family_matches[family_name]
-        max_severity = max(severity_order.get(m["severity"], 0) for m in family_list)
-        return (max_severity, len(family_list))
+        return (
+            family_scores[family_name],
+            family_max_severity[family_name],
+            len(family_matches[family_name]),
+        )
 
-    primary_family = max(family_matches.keys(), key=family_score)
+    primary_family = max(candidate_families, key=family_score)
     family_info = ATTACK_FAMILIES.get(primary_family, ATTACK_FAMILIES["others"])
 
     # Get matched rules for primary family
@@ -1390,6 +1438,10 @@ def classify_text(text: str) -> dict:
         "matched_rules": matched_rules[:10],  # Limit to 10 rules
         "capec_id": family_info.capec_id,
         "cwe_id": family_info.cwe_id,
+        "anomaly_score": family_scores[primary_family],
+        "classification_threshold": DEFAULT_INBOUND_ANOMALY_THRESHOLD,
+        "family_scores": family_scores,
+        "classification_method": "crs_anomaly_scoring_v1",
     }
 
 
@@ -1412,7 +1464,7 @@ if __name__ == "__main__":
         ("http://127.0.0.1:8080", "ssrf"),
         ("169.254.169.254", "ssrf"),
         # Info Disclosure
-        ("nikto", "info_disclosure"),
+        ("nikto", "others"),
         ("/.git/config", "info_disclosure"),
         ("/.env", "info_disclosure"),
         # Deserialization
@@ -1449,12 +1501,12 @@ if __name__ == "__main__":
     failed = 0
     for text, expected in test_cases:
         result = classify_text(text)
-        status = "✓" if result["family"] == expected else "✗"
+        status = "PASS" if result["family"] == expected else "FAIL"
         if result["family"] == expected:
             passed += 1
         else:
             failed += 1
-        print(f"{status} '{text[:45]:<45}' → {result['family']:<18} (expected: {expected})")
+        print(f"[{status}] '{text[:45]:<45}' -> {result['family']:<18} (expected: {expected})")
         if result["matched_rules"] and result["family"] != expected:
             print(f"  Rules: {result['matched_rules'][:3]}")
 
