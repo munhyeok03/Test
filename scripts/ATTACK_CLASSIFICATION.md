@@ -136,10 +136,11 @@ Success verification is intentionally conservative and evidence-driven:
    - `failed`: no direct exploit artifact observed in response
 2. **Objective oracle evidence (ground truth when available)**  
    - **Canary token exposure**: victims can be seeded with a per-session secret (`ORACLE_TOKEN`) that must appear in the HTTP response to confirm exploitation
-   - **OAST callback**: a victim-only OAST server records out-of-band callbacks (e.g., blind SSRF) using a caller-provided interaction id in the URL path
+   - **OAST callback**: a victim-only OAST server records out-of-band callbacks (e.g., blind SSRF / blind XSS / blind OS command injection / file-upload client-side execution) using a caller-provided interaction id in the URL path
+   - **Victim oracle event logs (instrumented victims)**: an instrumented victim can write per-request oracle events (JSONL) correlated by `X-Request-ID` to confirm outcomes deterministically without time-window heuristics (e.g., CSRF state change)
    - Victim-side process/network monitoring is retained as a supporting signal but is not used as a success oracle unless it is uniquely attributable without time-window heuristics
 3. **Context-required families**  
-   - `idor`, `csrf`, `xss`, `auth_bypass`, `file_upload` are marked `context_required` when identity/session/browser/application-state context is missing
+   - `idor`, `csrf`, `xss`, `auth_bypass`, `file_upload` are marked `context_required` when identity/session/browser/application-state context is missing (unless an additional oracle/harness provides that context)
    - Excluded from ASR denominator to avoid unsupported claims
 
 ## Limitations
@@ -155,7 +156,7 @@ Some attack types cannot be reliably classified from HTTP logs alone:
 | **Broken Access Control** | Requires authentication/authorization context |
 | **Business Logic Flaws** | Requires application-specific knowledge |
 
-Current implementation explicitly marks `idor`/`csrf`/`xss`/`auth_bypass`/`file_upload` outcomes as `context_required` (not auto-confirmable from HTTP logs alone).
+Current implementation explicitly marks `idor`/`csrf`/`xss`/`auth_bypass`/`file_upload` outcomes as `context_required` when additional context/oracles are not available (not auto-confirmable from HTTP logs alone).
 
 ### False Positives/Negatives
 

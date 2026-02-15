@@ -187,6 +187,105 @@ services:
       - victim-gemini
 
   # ===========================================
+  # VICTIM BROWSER HARNESS + ATTACKER PAGE SERVER
+  # ===========================================
+  # These services are started only for victims that need browser/session context
+  # to verify outcomes (e.g., XSS/CSRF/file_upload).
+
+  attacker-codex:
+    image: python:3.11-slim
+    container_name: attacker-codex
+    command: python -m http.server 9000 --directory /srv
+    volumes:
+      - ./results/${SESSION_TIMESTAMP}/attacker-pages/codex:/srv:ro
+    networks:
+      net-codex-victim:
+        aliases:
+          - attacker
+
+  browser-codex:
+    build:
+      context: ./metrics
+      dockerfile: Dockerfile.browser
+    container_name: browser-codex
+    environment:
+      - AGENT_NAME=codex
+      - VICTIM_BASE_URL=http://http-logger-codex:8080
+      - ATTACKER_BASE_URL=http://attacker:9000
+      - VICTIM_USERNAME=${PAPER_VICTIM_USERNAME:-victim}
+      - VICTIM_PASSWORD=${PAPER_VICTIM_VICTIM_PASSWORD_CODEX:-}
+      - LOG_DIR=/logs
+    volumes:
+      - ./results/${SESSION_TIMESTAMP}/oracles:/logs
+    networks:
+      - net-codex-victim
+    depends_on:
+      - http-logger-codex
+      - attacker-codex
+
+  attacker-claude:
+    image: python:3.11-slim
+    container_name: attacker-claude
+    command: python -m http.server 9000 --directory /srv
+    volumes:
+      - ./results/${SESSION_TIMESTAMP}/attacker-pages/claude:/srv:ro
+    networks:
+      net-claude-victim:
+        aliases:
+          - attacker
+
+  browser-claude:
+    build:
+      context: ./metrics
+      dockerfile: Dockerfile.browser
+    container_name: browser-claude
+    environment:
+      - AGENT_NAME=claude
+      - VICTIM_BASE_URL=http://http-logger-claude:8080
+      - ATTACKER_BASE_URL=http://attacker:9000
+      - VICTIM_USERNAME=${PAPER_VICTIM_USERNAME:-victim}
+      - VICTIM_PASSWORD=${PAPER_VICTIM_VICTIM_PASSWORD_CLAUDE:-}
+      - LOG_DIR=/logs
+    volumes:
+      - ./results/${SESSION_TIMESTAMP}/oracles:/logs
+    networks:
+      - net-claude-victim
+    depends_on:
+      - http-logger-claude
+      - attacker-claude
+
+  attacker-gemini:
+    image: python:3.11-slim
+    container_name: attacker-gemini
+    command: python -m http.server 9000 --directory /srv
+    volumes:
+      - ./results/${SESSION_TIMESTAMP}/attacker-pages/gemini:/srv:ro
+    networks:
+      net-gemini-victim:
+        aliases:
+          - attacker
+
+  browser-gemini:
+    build:
+      context: ./metrics
+      dockerfile: Dockerfile.browser
+    container_name: browser-gemini
+    environment:
+      - AGENT_NAME=gemini
+      - VICTIM_BASE_URL=http://http-logger-gemini:8080
+      - ATTACKER_BASE_URL=http://attacker:9000
+      - VICTIM_USERNAME=${PAPER_VICTIM_USERNAME:-victim}
+      - VICTIM_PASSWORD=${PAPER_VICTIM_VICTIM_PASSWORD_GEMINI:-}
+      - LOG_DIR=/logs
+    volumes:
+      - ./results/${SESSION_TIMESTAMP}/oracles:/logs
+    networks:
+      - net-gemini-victim
+    depends_on:
+      - http-logger-gemini
+      - attacker-gemini
+
+  # ===========================================
   # CODEX ENVIRONMENT (Isolated)
   # ===========================================
   victim-codex:
@@ -195,6 +294,13 @@ services:
     environment:
       - AGENT_NAME=codex
       - ORACLE_TOKEN=${ORACLE_TOKEN_CODEX:-}
+      - ORACLE_LOG_DIR=/oracles
+      - VICTIM_USERNAME=${PAPER_VICTIM_USERNAME:-victim}
+      - VICTIM_PASSWORD=${PAPER_VICTIM_VICTIM_PASSWORD_CODEX:-}
+      - ADMIN_USERNAME=${PAPER_VICTIM_ADMIN_USERNAME:-admin}
+      - ADMIN_PASSWORD=${PAPER_VICTIM_ADMIN_PASSWORD_CODEX:-}
+    volumes:
+      - ./results/${SESSION_TIMESTAMP}/oracles:/oracles
     networks:
       - net-codex-victim
     ports:
@@ -211,8 +317,10 @@ services:
       - ./metrics/http_logger.py:/scripts/http_logger.py:ro
       - ./results/${SESSION_TIMESTAMP}/http-logs:/logs
     networks:
-      - net-codex
-      - net-codex-victim
+      net-codex: {}
+      net-codex-victim:
+        aliases:
+          - http-logger
     depends_on:
       - victim-codex
 
@@ -237,6 +345,7 @@ services:
     volumes:
       - ./prompts:/prompts:ro
       - ./output_formats:/output_formats:ro
+      - ./results/${SESSION_TIMESTAMP}/attacker-pages/codex:/attacker-pages
     depends_on:
       http-logger-codex:
         condition: service_started
@@ -252,6 +361,13 @@ services:
     environment:
       - AGENT_NAME=claude
       - ORACLE_TOKEN=${ORACLE_TOKEN_CLAUDE:-}
+      - ORACLE_LOG_DIR=/oracles
+      - VICTIM_USERNAME=${PAPER_VICTIM_USERNAME:-victim}
+      - VICTIM_PASSWORD=${PAPER_VICTIM_VICTIM_PASSWORD_CLAUDE:-}
+      - ADMIN_USERNAME=${PAPER_VICTIM_ADMIN_USERNAME:-admin}
+      - ADMIN_PASSWORD=${PAPER_VICTIM_ADMIN_PASSWORD_CLAUDE:-}
+    volumes:
+      - ./results/${SESSION_TIMESTAMP}/oracles:/oracles
     networks:
       - net-claude-victim
     ports:
@@ -268,8 +384,10 @@ services:
       - ./metrics/http_logger.py:/scripts/http_logger.py:ro
       - ./results/${SESSION_TIMESTAMP}/http-logs:/logs
     networks:
-      - net-claude
-      - net-claude-victim
+      net-claude: {}
+      net-claude-victim:
+        aliases:
+          - http-logger
     depends_on:
       - victim-claude
 
@@ -294,6 +412,7 @@ services:
     volumes:
       - ./prompts:/prompts:ro
       - ./output_formats:/output_formats:ro
+      - ./results/${SESSION_TIMESTAMP}/attacker-pages/claude:/attacker-pages
     depends_on:
       http-logger-claude:
         condition: service_started
@@ -309,6 +428,13 @@ services:
     environment:
       - AGENT_NAME=gemini
       - ORACLE_TOKEN=${ORACLE_TOKEN_GEMINI:-}
+      - ORACLE_LOG_DIR=/oracles
+      - VICTIM_USERNAME=${PAPER_VICTIM_USERNAME:-victim}
+      - VICTIM_PASSWORD=${PAPER_VICTIM_VICTIM_PASSWORD_GEMINI:-}
+      - ADMIN_USERNAME=${PAPER_VICTIM_ADMIN_USERNAME:-admin}
+      - ADMIN_PASSWORD=${PAPER_VICTIM_ADMIN_PASSWORD_GEMINI:-}
+    volumes:
+      - ./results/${SESSION_TIMESTAMP}/oracles:/oracles
     networks:
       - net-gemini-victim
     ports:
@@ -325,8 +451,10 @@ services:
       - ./metrics/http_logger.py:/scripts/http_logger.py:ro
       - ./results/${SESSION_TIMESTAMP}/http-logs:/logs
     networks:
-      - net-gemini
-      - net-gemini-victim
+      net-gemini: {}
+      net-gemini-victim:
+        aliases:
+          - http-logger
     depends_on:
       - victim-gemini
 
@@ -351,6 +479,7 @@ services:
     volumes:
       - ./prompts:/prompts:ro
       - ./output_formats:/output_formats:ro
+      - ./results/${SESSION_TIMESTAMP}/attacker-pages/gemini:/attacker-pages
     depends_on:
       http-logger-gemini:
         condition: service_started

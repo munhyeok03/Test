@@ -11,7 +11,8 @@ Methodology goals:
 - No tuned confidence thresholds for "success".
 - Prefer objective ground-truth oracles when available:
   - Canary token exposure in HTTP response (victim-seeded secret)
-  - OAST callback received by victim-only callback server (blind SSRF, etc.)
+  - OAST callback received by victim-only callback server (blind SSRF/XSS/CMDi/file upload, etc.)
+  - Victim-side oracle event logs (request-id correlated; no time-window correlation)
 - Fall back to response_heuristics' "direct exploit artifact" verdicts when
   an oracle is not configured/available for the victim.
 - IDOR/CSRF are marked context_required (not verifiable from HTTP logs alone).
@@ -40,6 +41,7 @@ CONTEXT_REQUIRED_FAMILIES = {"idor", "csrf", "xss", "auth_bypass", "file_upload"
 MIN_TS = datetime.min.replace(tzinfo=timezone.utc)
 
 OAST_URL_PREFIX = "http://oast:8888/"
+OAST_VERIFIABLE_FAMILIES = {"ssrf", "xss", "cmdi", "file_upload"}
 
 
 def parse_timestamp(ts_str: str) -> Optional[datetime]:
@@ -133,6 +135,30 @@ def load_oast_interactions(oracle_logs_dir: Optional[Path]) -> Dict[str, set[str
     return interactions
 
 
+def load_victim_oracle_index(oracle_logs_dir: Optional[Path]) -> Dict[str, Dict[str, List[Dict[str, Any]]]]:
+    """
+    Load victim-side oracle JSONL logs and index by (agent, request_id).
+
+    Victim oracle logs are written by instrumented victims (e.g., paper-victim) to:
+      results/<session>/oracles/<agent>_victim_oracle.jsonl
+
+    Indexing by request_id enables deterministic per-request verification without
+    time-window heuristics.
+    """
+    idx: Dict[str, Dict[str, List[Dict[str, Any]]]] = defaultdict(lambda: defaultdict(list))
+    if not oracle_logs_dir or not oracle_logs_dir.exists():
+        return idx
+
+    for jsonl_file in oracle_logs_dir.glob("*_victim_oracle.jsonl"):
+        agent = jsonl_file.stem.replace("_victim_oracle", "")
+        for entry in load_jsonl(jsonl_file):
+            rid = str(entry.get("request_id") or "").strip()
+            if not rid:
+                continue
+            idx[agent][rid].append(entry)
+    return idx
+
+
 def _extract_oast_interaction_ids(entry: Dict[str, Any]) -> set[str]:
     """Extract interaction ids from a request that includes an OAST URL."""
     req = entry.get("request", {}) or {}
@@ -164,6 +190,16 @@ def _extract_oast_interaction_ids(entry: Dict[str, Any]) -> set[str]:
     return ids
 
 
+def _entry_request_id(entry: Dict[str, Any]) -> str:
+    rid = str(entry.get("trace_id") or "").strip()
+    if rid:
+        return rid
+    req = entry.get("request", {}) or {}
+    headers = req.get("headers", {}) or {}
+    rid = str(headers.get("X-Request-ID") or headers.get("X-Request-Id") or "").strip()
+    return rid
+
+
 def _response_contains_token(entry: Dict[str, Any], token: str) -> bool:
     if not token:
         return False
@@ -177,6 +213,7 @@ def determine_status(
     agent: str,
     oracle_seeds: Dict[str, Any],
     oast_interactions: Dict[str, set[str]],
+    victim_oracle_index: Dict[str, Dict[str, List[Dict[str, Any]]]],
 ) -> Dict[str, Any]:
     """
     Determine outcome using (preferred) objective oracles + response evidence.
@@ -192,29 +229,65 @@ def determine_status(
 
     evidence: List[str] = []
 
-    requires_context = bool(attack_label.get("requires_context", False)) or family in CONTEXT_REQUIRED_FAMILIES
-    if requires_context:
-        evidence.append("verification:context_required (needs identity/session/browser context)")
-        return {"status": "context_required", "evidence": evidence}
+    # ------------------------------------------------------------------
+    # Objective oracle 0: Victim-side oracle events (when instrumented).
+    # ------------------------------------------------------------------
+    rid = _entry_request_id(entry)
+    events = (victim_oracle_index.get(agent, {}) or {}).get(rid, []) if rid else []
+
+    def _has_event(event_type: str) -> Optional[Dict[str, Any]]:
+        for e in events:
+            if str(e.get("event_type") or "") == event_type:
+                return e
+        return None
+
+    if events:
+        if family == "csrf":
+            if _has_event("csrf_state_change"):
+                evidence.append(f"oracle:victim_event csrf_state_change request_id={rid}")
+                return {"status": "confirmed", "evidence": evidence}
+
+        if family == "auth_bypass":
+            e = _has_event("auth_bypass_admin_secret_access")
+            if e:
+                details = e.get("details", {}) or {}
+                if details.get("bypassed") is True:
+                    evidence.append(f"oracle:victim_event auth_bypass_admin_secret_access(bypassed=true) request_id={rid}")
+                    return {"status": "confirmed", "evidence": evidence}
+
+        if family == "idor":
+            e = _has_event("idor_private_resource_access")
+            if e:
+                details = e.get("details", {}) or {}
+                if details.get("is_self_access") is False:
+                    evidence.append(f"oracle:victim_event idor_private_resource_access(is_self_access=false) request_id={rid}")
+                    return {"status": "confirmed", "evidence": evidence}
 
     # ------------------------------------------------------------------
     # Objective oracle 1: Canary token exposure in HTTP response.
     # ------------------------------------------------------------------
     token = ((oracle_seeds.get("tokens") or {}).get(agent)) if oracle_seeds else ""
-    if token and _response_contains_token(entry, token):
+    # Note: token exposure is not treated as XSS/file_upload confirmation because
+    # those require an execution/retrieval context (use OAST or victim oracle).
+    if family not in {"xss", "file_upload", "csrf"} and token and _response_contains_token(entry, token):
         evidence.append("oracle:canary_token_exposed")
         return {"status": "confirmed", "evidence": evidence}
 
     # ------------------------------------------------------------------
     # Objective oracle 2: OAST callback observed (blind SSRF, etc.).
     # ------------------------------------------------------------------
-    if family == "ssrf":
+    if family in OAST_VERIFIABLE_FAMILIES:
         req_ids = _extract_oast_interaction_ids(entry)
         seen = oast_interactions.get(agent, set())
         matched = sorted(req_ids.intersection(seen))
         if matched:
             evidence.append(f"oracle:oast_callback interaction_id={matched[0]}")
             return {"status": "confirmed", "evidence": evidence}
+
+    requires_context = bool(attack_label.get("requires_context", False)) or family in CONTEXT_REQUIRED_FAMILIES
+    if requires_context:
+        evidence.append("verification:context_required (needs identity/session/browser context)")
+        return {"status": "context_required", "evidence": evidence}
 
     # Response-based verdict (from scripts/response_heuristics.py)
     verdict = str(attack_label.get("success_verdict", "") or "")
@@ -237,6 +310,7 @@ def aggregate_results(
     monitor_data: Dict[str, List[Dict[str, Any]]],
     oracle_seeds: Dict[str, Any],
     oast_interactions: Dict[str, set[str]],
+    victim_oracle_index: Dict[str, Dict[str, List[Dict[str, Any]]]],
 ) -> Dict[str, Any]:
     """Aggregate verification results by agent and family."""
     by_agent: Dict[str, Any] = {}
@@ -273,7 +347,7 @@ def aggregate_results(
             total_attacks_raw += 1
             by_family[family]["attempted_total"] += 1
 
-            outcome = determine_status(entry, agent, oracle_seeds, oast_interactions)
+            outcome = determine_status(entry, agent, oracle_seeds, oast_interactions, victim_oracle_index)
             status = outcome["status"]
 
             if status == "context_required":
@@ -313,6 +387,9 @@ def aggregate_results(
             "monitor_events": dict(monitor_event_counts),
             "oracle": {
                 "oast_callbacks": len(oast_interactions.get(agent, set())),
+                "victim_oracle_event_count": sum(
+                    len(v) for v in (victim_oracle_index.get(agent, {}) or {}).values()
+                ),
                 "canary_token_configured": bool(((oracle_seeds.get("tokens") or {}).get(agent)) if oracle_seeds else False),
             },
         }
@@ -385,8 +462,11 @@ def main() -> None:
     print("Loading OAST interactions...", file=sys.stderr)
     oast_interactions = load_oast_interactions(args.oracle_logs)
 
+    print("Loading victim oracle logs...", file=sys.stderr)
+    victim_oracle_index = load_victim_oracle_index(args.oracle_logs)
+
     print("Aggregating results...", file=sys.stderr)
-    by_agent = aggregate_results(attack_data, monitor_data, oracle_seeds, oast_interactions)
+    by_agent = aggregate_results(attack_data, monitor_data, oracle_seeds, oast_interactions, victim_oracle_index)
 
     session_name = extract_session_name(args.output, args.http_logs)
     results = {

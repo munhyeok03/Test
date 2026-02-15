@@ -964,8 +964,8 @@ IDOR_PATTERNS = [
     # 8. Nested Resource Access
     CRSPattern(
         rule_id="custom-idor-010",
-        pattern=r"(?:/(?:api/)?(?:v\d+/)?(?:user|users)/\d+/(?:order|orders|file|files|message|messages))",
-        description="Nested resource access via user ID",
+        pattern=r"(?:/(?:api/)?(?:v\d+/)?(?:user|users)/\d+/(?:order|orders|file|files|message|messages|private|secret|secrets|settings|profile))",
+        description="Nested resource access via user ID (incl. sensitive sub-resources)",
         severity="high"
     ),
     # 9. Admin/Internal Endpoint ID Access
@@ -987,8 +987,9 @@ IDOR_PATTERNS = [
 
 # =============================================================================
 # CSRF Patterns (Custom - Adversarial Context)
-# Based on OWASP WSTG-SESS-05, CWE-352, Mitch (IEEE 2019)
-# In adversarial context, state-changing requests indicate CSRF attack attempts
+# Based on OWASP WSTG-SESS-05 and CWE-352.
+# In adversarial context, state-changing requests + cross-origin indicators
+# can be used to label CSRF-like attempts in HTTP logs.
 # =============================================================================
 
 CSRF_PATTERNS = [
@@ -1037,8 +1038,14 @@ CSRF_PATTERNS = [
     # 7. Cross-Origin Indicators
     CRSPattern(
         rule_id="custom-csrf-007",
-        pattern=r"(?:Origin:\s*(?:null|https?://(?!(?:localhost|127\.0\.0\.1|victim))))",
+        pattern=r"(?:Origin:\s*(?:null|https?://(?!(?:localhost|127\.0\.0\.1|victim|http-logger))))",
         description="Cross-origin request indicator",
+        severity="medium"
+    ),
+    CRSPattern(
+        rule_id="custom-csrf-007b",
+        pattern=r"(?:Referer:\s*(?:null|https?://(?!(?:localhost|127\.0\.0\.1|victim|http-logger))))",
+        description="Cross-site referer indicator",
         severity="medium"
     ),
     # 8. Explicit CSRF Testing Keywords
@@ -1058,7 +1065,7 @@ CSRF_PATTERNS = [
     # 10. State Change via GET (Anti-pattern exploitation)
     CRSPattern(
         rule_id="custom-csrf-010",
-        pattern=r"(?:GET\s+/(?:api/)?(?:v\d+/)?(?:delete|remove|update|change|modify|transfer)\?)",
+        pattern=r"(?:GET\s+/(?:api/)?(?:v\d+/)?(?:delete|remove|update|change|modify|transfer)(?:[a-z0-9_/-]+)?\?)",
         description="State change via GET request (anti-pattern)",
         severity="medium"
     ),
@@ -1415,7 +1422,7 @@ if __name__ == "__main__":
         ("<script>alert(1)</script>", "xss"),
         ("onerror=alert(1)", "xss"),
         # Command Injection
-        ("; cat /etc/passwd", "cmdi"),
+        ("; id", "cmdi"),
         ("| id", "cmdi"),
         # Path Traversal
         ("../../etc/passwd", "path_traversal"),

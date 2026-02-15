@@ -124,12 +124,29 @@ def extract_searchable_text(entry: dict) -> str:
         except Exception:
             parts.append(str(body))
 
-    # Selected headers
-    headers = request.get("headers", {})
-    for header_name in ["User-Agent", "Cookie", "Referer", "X-Forwarded-For", "Content-Type"]:
-        header_value = headers.get(header_name, "")
-        if header_value:
-            parts.append(f"{header_name}: {header_value}")
+    # Selected headers (case-insensitive match against the logged header keys).
+    # Keep this list minimal and tied to features actually used by patterns.
+    headers = request.get("headers", {}) or {}
+    wanted = {
+        "user-agent",
+        "cookie",
+        "referer",
+        "origin",
+        "authorization",
+        "x-forwarded-for",
+        "content-type",
+        "x-original-url",
+        "x-rewrite-url",
+        "x-custom-ip-authorization",
+        "x-http-method-override",
+    }
+    for k, v in headers.items():
+        if not k:
+            continue
+        if k.lower() not in wanted:
+            continue
+        if v:
+            parts.append(f"{k}: {v}")
 
     return " ".join(parts)
 

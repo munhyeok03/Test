@@ -1,0 +1,16 @@
+# Victim Browser Harness (headless)
+#
+# Purpose:
+# - Provide the missing "browser/session context" needed to objectively verify
+#   XSS / CSRF / file upload outcomes per OWASP WSTG guidance.
+#
+# Note: This container runs only inside victim-private networks.
+
+FROM mcr.microsoft.com/playwright/python:v1.41.2-jammy
+
+WORKDIR /app
+
+COPY browser_harness.py /app/browser_harness.py
+
+CMD ["python", "/app/browser_harness.py"]
+
