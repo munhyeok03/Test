@@ -40,8 +40,8 @@ WSTG_REFERENCE_MAP: dict[str, dict[str, str]] = {
         "url": "https://owasp.org/www-project-web-security-testing-guide/stable/4-Web_Application_Security_Testing/07-Input_Validation_Testing/05-Testing_for_SQL_Injection",
     },
     "xss": {
-        "id": "WSTG-INPV-01",
-        "url": "https://owasp.org/www-project-web-security-testing-guide/stable/4-Web_Application_Security_Testing/07-Input_Validation_Testing/01-Testing_for_Reflected_Cross_Site_Scripting",
+        "id": "WSTG-INPV-02",
+        "url": "https://owasp.org/www-project-web-security-testing-guide/stable/4-Web_Application_Security_Testing/07-Input_Validation_Testing/02-Testing_for_Stored_Cross_Site_Scripting",
     },
     "cmdi": {
         "id": "WSTG-INPV-12",

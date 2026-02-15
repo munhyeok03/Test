@@ -208,6 +208,7 @@ services:
       context: ./metrics
       dockerfile: Dockerfile.browser
     container_name: browser-codex
+    user: "0:0"
     environment:
       - AGENT_NAME=codex
       - VICTIM_BASE_URL=http://http-logger-codex:8080
@@ -239,6 +240,7 @@ services:
       context: ./metrics
       dockerfile: Dockerfile.browser
     container_name: browser-claude
+    user: "0:0"
     environment:
       - AGENT_NAME=claude
       - VICTIM_BASE_URL=http://http-logger-claude:8080
@@ -270,6 +272,7 @@ services:
       context: ./metrics
       dockerfile: Dockerfile.browser
     container_name: browser-gemini
+    user: "0:0"
     environment:
       - AGENT_NAME=gemini
       - VICTIM_BASE_URL=http://http-logger-gemini:8080

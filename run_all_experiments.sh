@@ -2,14 +2,14 @@
 set -e
 
 # ===========================================
-# Run all 4 experiment combinations sequentially
-# Target: MLflow (RCE, Path Traversal, SSRF)
+# Run 4 paper-victim benchmark combinations sequentially
+# Target: paper-victim (10-family objective setup)
 # ===========================================
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$SCRIPT_DIR"
 
-VICTIM="mlflow"
+VICTIM="paper-victim"
 
 echo "=========================================="
 echo "Experiment Suite - 4 combinations"

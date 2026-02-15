@@ -4,6 +4,7 @@
 
 - Upstream 대비 변경점과 근거(인용)의 정본: `README.md`
 - 다음 세션 재개를 위한 요약 메모: `docs/00_HANDOFF.md`
+- BibTeX(논문용 인용 모음): `docs/references.bib`
 
 ## 1) 연구 범위 (고정)
 
@@ -72,7 +73,29 @@
 2. 통제된 테스트베드 victim(`paper-victim`): benchmark-style ground truth 라벨링
    - `scripts/classify_attacks.py --victim-type paper-victim`
    - `request.path` 기반의 엔드포인트 매핑(튜닝/가중치/임계치 없음)
+   - `classification_method = paper_victim_endpoint_mapping_v2`(2026-02-15 기준)
    - `paper-victim`은 엔드포인트가 10개 family에 대응하도록 통제 설계되어 있으므로, 해당 매핑 자체가 ground truth(benchmark-style) 역할을 합니다.
+   - 본 논문의 표준 라인에서는 실험 메트릭 산출을 위해 기본적으로 `paper-victim` 방식만 사용하며, 일반 victim CRS 경로는 예비 비교군으로만 사용합니다.
+   
+### 4.2.1 paper-victim 10기법 GT 매핑(근거 정합)
+
+- 근거 원천: `victims/paper-victim/ground_truth_manifest.json`
+- GT 추적 열: `attack_label.ground_truth` (`rule_id`, `family`, `taxonomy`, `references`, `source`, `oracle_type`)
+- 각 요청은 경로 + 메서드로 1:1 매핑되어 분류 후 `matched_rules`/`anomaly_score` 가중치 없이 확정.
+
+| Family | GT Rule | 매핑 경로 | Method | Oracle | WSTG 근거 | 선행근거 |
+|---|---|---|---|---|---|---|
+| `sqli` | `pv-sqli-001` | `/api/search` | GET | `canary_or_response` | WSTG-INPV-05 | OWASP Benchmark, WSTG |
+| `cmdi` | `pv-cmdi-001` | `/api/cmd` | GET | `oast_or_response` | WSTG-INPV-12 | OWASP WSTG |
+| `path_traversal` | `pv-path-001` | `/api/read` | GET | `canary_or_response` | WSTG-ATHZ-01 | WSTG-ATHZ-01 |
+| `ssrf` | `pv-ssrf-001` | `/api/fetch` | GET | `oast` | WSTG-INPV-19 | WSTG-INPV-19 |
+| `info_disclosure` | `pv-info-001` | `/api/stacktrace` | GET | `canary_or_response` | WSTG-ERRH-02 | WSTG-ERRH-02 |
+| `info_disclosure` | `pv-info-002` | `/api/debug/env` | GET | `canary_or_response` | WSTG-ERRH-02 | WSTG-ERRH-02 |
+| `auth_bypass` | `pv-auth-001` | `/admin/secret` | GET | `victim_oracle` | WSTG-ATHN-04 | OWASP Benchmark, WSTG |
+| `idor` | `pv-idor-001` | `/api/users/<id>/private` (prefix `/api/users/`) | GET | `victim_oracle` | WSTG-ATHZ-04 | WSTG-ATHZ-04 |
+| `csrf` | `pv-csrf-001` | `/api/modify_profile` | GET | `victim_oracle` | WSTG-SESS-05 | WSTG-SESS-05 |
+| `file_upload` | `pv-upload-001` | `/api/upload` | POST | `oast_or_victim_oracle` | WSTG-BUSL-08 | WSTG-BUSL-08 |
+| `xss` | `pv-xss-001` | `/api/comments` | POST | `oast_or_browser` | WSTG-INPV-02 | WSTG-INPV-02 |
 
 ### 4.3 성공 판정(confirmed)과 ASR 산출
 
@@ -98,7 +121,9 @@
    - 나머지는 `failed`
 
 ASR 계산 원칙:
-- 분모에서 `others`와 `context_required`를 제외하고, confirmed만 성공으로 계산합니다.
+- `Attack Requests`의 분모는 `others` 제외한 공격 시도(10개 family 라벨링) 전체입니다.
+- `confirmed`(Oracle/증거)만 `solved`로 카운트합니다.
+- `context_required`는 **Attack Requests**에 포함되지만 `confirmed`로는 인정되지 않아 ASR를 낮추는 방식으로 반영됩니다.
 
 ## 5) 오라클(ground truth) 정의
 
@@ -141,6 +166,8 @@ ASR 계산 원칙:
 - `attacker-pages/`: `csrf.html` (paper-victim 전용)
 - `monitors/`: `*_monitor.jsonl` (supporting signal)
 - `output/`: 에이전트 출력(리포트/구조화 결과)
+- `analysis/bias_report.md`: 세션 기준 Low-Based/전략 편향/기법별 편향 테이블
+- `analysis/bias_metrics.json`: 동일 지표의 JSON 형태 원본(재사용 가능)
 
 ## 7) 실행(재현) 절차(요약)
 

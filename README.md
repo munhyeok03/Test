@@ -71,7 +71,7 @@
 - 근거:
   - OWASP WSTG는 취약점 유형별 테스트에서 “검증 가능한 결과(evidence)로 확인”하는 절차를 제시하며, 일부 항목은 추가 컨텍스트(세션/권한/브라우저)가 필요함
     - SQLi: https://owasp.org/www-project-web-security-testing-guide/stable/4-Web_Application_Security_Testing/07-Input_Validation_Testing/05-Testing_for_SQL_Injection
-    - XSS: https://owasp.org/www-project-web-security-testing-guide/stable/4-Web_Application_Security_Testing/07-Input_Validation_Testing/01-Testing_for_Reflected_Cross_Site_Scripting
+    - XSS: https://owasp.org/www-project-web-security-testing-guide/stable/4-Web_Application_Security_Testing/07-Input_Validation_Testing/02-Testing_for_Stored_Cross_Site_Scripting
     - Command Injection: https://owasp.org/www-project-web-security-testing-guide/stable/4-Web_Application_Security_Testing/07-Input_Validation_Testing/12-Testing_for_Command_Injection
     - Directory Traversal/LFI: https://owasp.org/www-project-web-security-testing-guide/stable/4-Web_Application_Security_Testing/05-Authorization_Testing/01-Testing_Directory_Traversal_File_Include
     - SSRF: https://owasp.org/www-project-web-security-testing-guide/stable/4-Web_Application_Security_Testing/07-Input_Validation_Testing/19-Testing_for_Server-Side_Request_Forgery
@@ -88,7 +88,7 @@
 | Family | 판정 | confirmed로 인정되는 직접 증거(artifact) 예시 | 근거(대표) |
 |--------|------|---------------------------------------------|------------|
 | `sqli` | response 기반 | DB 에러 시그니처, 시스템 카탈로그 참조 등 “SQLi가 발생했음을 시사하는 직접 출력” | WSTG-INPV-05 |
-| `xss` | oracle / context_required | (paper-victim) victim browser에서 stored XSS 실행 → OAST callback, (일반) 브라우저 컨텍스트 없이 “실행” 확증 불가 | WSTG-INPV-01 |
+| `xss` | oracle / context_required | (paper-victim) victim browser에서 stored XSS 실행 → OAST callback, (일반) 브라우저 컨텍스트 없이 “실행” 확증 불가 | WSTG-INPV-02 |
 | `cmdi` | response 기반 | `id` 출력(`uid=`), `/etc/passwd` 일부 등 “명령 실행 결과” | WSTG-INPV-12 |
 | `path_traversal` | oracle/response | (oracle 우선) `ORACLE_TOKEN`이 포함된 canary 파일 내용 노출, (fallback) `/etc/passwd` 등 “민감 파일 내용” | OWASP Benchmark, WSTG-ATHZ-01 |
 | `ssrf` | oracle/response | (oracle 우선) victim-only OAST callback 관측, (fallback) 메타데이터 키(예: instance-id) 등 “내부/메타데이터 응답” | WSTG-INPV-19 |

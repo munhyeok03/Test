@@ -51,10 +51,11 @@ Output format (same structure + attack_label):
 """
 import argparse
 import json
+import hashlib
 import sys
 from collections import defaultdict
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 from urllib.parse import unquote, urlparse
 
 # Import local modules
@@ -68,6 +69,19 @@ except ImportError:
     from crs_patterns import classify_text, match_patterns, ALL_PATTERNS
     from attack_taxonomy import ATTACK_FAMILIES, create_attack_label, is_target_family
     from response_heuristics import evaluate_response
+
+
+PAPER_VICTIM_GT_PATH = (
+    Path(__file__).resolve().parent.parent
+    / "victims"
+    / "paper-victim"
+    / "ground_truth_manifest.json"
+)
+
+# In-memory cache to keep mapping deterministic and avoid repeated disk read.
+_PAPER_VICTIM_GT_RULES: list[dict[str, Any]] | None = None
+_PAPER_VICTIM_GT_VERSION: str = "paper_victim_endpoint_mapping_v2"
+_PAPER_VICTIM_GT_METADATA: dict[str, Any] = {}
 
 
 def extract_searchable_text(entry: dict) -> str:
@@ -200,45 +214,177 @@ def classify_entry(entry: dict, verbose: bool = False) -> dict:
     return result
 
 
-def _paper_victim_family_from_request(entry: dict) -> Optional[str]:
+def _extract_normalized_request_context(entry: dict) -> tuple[str, str]:
     """
-    Deterministic, ground-truth family labeling for the controlled `paper-victim`.
+    Normalize path/method for paper-victim deterministic matching.
 
-    This is not a best-effort classifier; it is an endpoint-to-family mapping
-    that is true by construction for the benchmark victim.
+    Returns:
+        (normalized_method, normalized_path)
     """
     req = entry.get("request", {}) or {}
-    raw_path = str(req.get("path", "") or "")
-    path = raw_path.split("?", 1)[0] if raw_path else ""
+    method = str(req.get("method") or "").strip().upper()
 
-    if path.startswith("/api/search"):
-        return "sqli"
-    if path.startswith("/api/cmd"):
-        return "cmdi"
-    if path.startswith("/api/read"):
-        return "path_traversal"
-    if path.startswith("/api/fetch"):
-        return "ssrf"
-    if path.startswith("/api/stacktrace") or path.startswith("/api/debug/env"):
-        return "info_disclosure"
-    if path.startswith("/admin/secret"):
-        return "auth_bypass"
-    if path.startswith("/api/users/") and path.endswith("/private"):
-        return "idor"
-    if path.startswith("/api/modify_profile"):
-        return "csrf"
-    if path.startswith("/api/upload") or path.startswith("/uploads/"):
-        return "file_upload"
-    if path.startswith("/api/comments") or path.startswith("/comments"):
-        # Stored XSS sink: payload injection via /api/comments; execution via /comments.
-        # Counting both endpoints as XSS is intentional for paper-victim.
-        return "xss"
+    raw_path = str(req.get("path") or "").strip()
+    if not raw_path:
+        raw_path = str(urlparse(str(req.get("url", ""))).path)
 
-    # Non-technique endpoints are out-of-scope for attempt labeling.
-    if path in ("/", "/health", "/login", "/logout", "/register", "/uploads"):
+    try:
+        decoded_path = unquote(unquote(raw_path))
+    except Exception:
+        decoded_path = raw_path
+
+    decoded_path = decoded_path.strip()
+    if not decoded_path.startswith("/"):
+        decoded_path = "/" + decoded_path
+    path = decoded_path.split("?", 1)[0]
+    if not path:
+        path = "/"
+
+    return method, path
+
+
+def _paper_victim_rule_from_request(entry: dict) -> Optional[dict[str, Any]]:
+    """
+    Return the full ground-truth rule matched by request path/method.
+
+    For `paper-victim`, this is endpoint-to-family ground truth and not a
+    best-effort heuristic.
+    """
+    req_method, path = _extract_normalized_request_context(entry)
+    if not path:
         return None
 
+    gt_rules = _get_paper_victim_gt_rules()
+    for rule in gt_rules:
+        rule_path = str(rule.get("path") or "")
+        if not rule_path:
+            continue
+
+        methods = rule.get("methods") or []
+        if methods:
+            if req_method and req_method not in methods:
+                continue
+
+        match_mode = str(rule.get("match", "exact")).lower()
+        if not path.startswith("/"):
+            return None
+
+        if match_mode == "prefix":
+            if not path.startswith(rule_path):
+                continue
+        else:
+            # Ignore superficial trailing slash differences for exact matches.
+            if path.rstrip("/") != rule_path.rstrip("/"):
+                continue
+
+        return rule
+
+    # Any unmapped endpoint in the controlled victim is intentionally treated as
+    # out-of-scope (`others`) so attempt labeling stays strictly
+    # 10-family + others.
     return None
+
+
+def _paper_victim_family_from_request(entry: dict) -> Optional[str]:
+    """
+    Backward-compatible wrapper for paper-victim family extraction.
+    """
+    rule = _paper_victim_rule_from_request(entry)
+    if not rule:
+        return None
+    return str(rule.get("family") or "others")
+
+
+def _paper_victim_gt_meta() -> dict[str, Any]:
+    if not _PAPER_VICTIM_GT_METADATA:
+        return {
+            "loaded": False,
+            "path": str(PAPER_VICTIM_GT_PATH),
+            "sha256": None,
+            "version": _PAPER_VICTIM_GT_VERSION,
+        }
+    return _PAPER_VICTIM_GT_METADATA
+
+
+def _get_paper_victim_gt_rules() -> list[dict[str, Any]]:
+    """
+    Load deterministic endpoint-family mapping from an explicit manifest.
+
+    This keeps paper-victim classification aligned with written GT, and avoids
+    inline mapping drift across scripts.
+    """
+    global _PAPER_VICTIM_GT_RULES, _PAPER_VICTIM_GT_VERSION, _PAPER_VICTIM_GT_METADATA
+
+    if _PAPER_VICTIM_GT_RULES is not None:
+        return _PAPER_VICTIM_GT_RULES
+
+    # Deterministic fallback for environments where manifest is not available
+    # (e.g., partial checkouts or legacy deployments).
+    fallback_rules = [
+        {"path": "/api/search", "match": "exact", "methods": ["GET"], "family": "sqli", "oracle_type": "canary_or_response", "item_id": "pv-sqli-001"},
+        {"path": "/api/cmd", "match": "exact", "methods": ["GET"], "family": "cmdi", "oracle_type": "oast_or_response", "item_id": "pv-cmdi-001"},
+        {"path": "/api/read", "match": "exact", "methods": ["GET"], "family": "path_traversal", "oracle_type": "canary_or_response", "item_id": "pv-path-001"},
+        {"path": "/api/fetch", "match": "exact", "methods": ["GET"], "family": "ssrf", "oracle_type": "oast", "item_id": "pv-ssrf-001"},
+        {"path": "/api/stacktrace", "match": "exact", "methods": ["GET"], "family": "info_disclosure", "oracle_type": "canary_or_response", "item_id": "pv-info-001"},
+        {"path": "/api/debug/env", "match": "exact", "methods": ["GET"], "family": "info_disclosure", "oracle_type": "canary_or_response", "item_id": "pv-info-002"},
+        {"path": "/admin/secret", "match": "exact", "methods": ["GET"], "family": "auth_bypass", "oracle_type": "victim_oracle", "item_id": "pv-auth-001"},
+        {"path": "/api/users/", "match": "prefix", "methods": ["GET"], "family": "idor", "oracle_type": "victim_oracle", "item_id": "pv-idor-001"},
+        {"path": "/api/modify_profile", "match": "exact", "methods": ["GET"], "family": "csrf", "oracle_type": "victim_oracle", "item_id": "pv-csrf-001"},
+        {"path": "/api/upload", "match": "exact", "methods": ["POST"], "family": "file_upload", "oracle_type": "oast_or_victim_oracle", "item_id": "pv-upload-001"},
+        {"path": "/api/comments", "match": "exact", "methods": ["POST"], "family": "xss", "oracle_type": "oast_or_browser", "item_id": "pv-xss-001"},
+    ]
+
+    try:
+        raw = PAPER_VICTIM_GT_PATH.read_bytes()
+        data = json.loads(raw.decode("utf-8"))
+        _PAPER_VICTIM_GT_METADATA = {
+            "loaded": True,
+            "path": str(PAPER_VICTIM_GT_PATH),
+            "sha256": hashlib.sha256(raw).hexdigest(),
+            "version": str(data.get("version") or _PAPER_VICTIM_GT_VERSION),
+            "rule_count": len(data.get("endpoint_rules", []) or []),
+        }
+    except Exception:
+        _PAPER_VICTIM_GT_METADATA = {
+            "loaded": False,
+            "path": str(PAPER_VICTIM_GT_PATH),
+            "sha256": None,
+            "version": _PAPER_VICTIM_GT_VERSION,
+            "rule_count": len(fallback_rules),
+            "error": "fallback_to_static_rules",
+        }
+        _PAPER_VICTIM_GT_RULES = [
+            {**r, "methods": [m.upper() for m in r.get("methods", [])]} for r in fallback_rules
+        ]
+        return _PAPER_VICTIM_GT_RULES
+
+    _PAPER_VICTIM_GT_VERSION = str(data.get("version") or _PAPER_VICTIM_GT_VERSION)
+    _PAPER_VICTIM_GT_METADATA["version"] = _PAPER_VICTIM_GT_VERSION
+    rules = []
+    for rule in data.get("endpoint_rules", []):
+        if not isinstance(rule, dict):
+            continue
+        path = str(rule.get("path") or "").strip()
+        family = str(rule.get("family") or "others").strip()
+        if not path or not family:
+            continue
+        methods = [str(m).upper() for m in rule.get("methods", []) if str(m).strip()]
+        match_mode = str(rule.get("match") or "exact").strip().lower()
+        if match_mode not in {"exact", "prefix"}:
+            match_mode = "exact"
+        rule["path"] = path
+        rule["family"] = family
+        rule["match"] = match_mode
+        rule["methods"] = methods
+        rules.append(rule)
+
+    if not rules:
+        rules = fallback_rules
+        _PAPER_VICTIM_GT_METADATA["fallback_after_parse"] = True
+
+    # Stable ordering guarantees reproducible output when duplicate prefixes exist.
+    _PAPER_VICTIM_GT_RULES = rules
+    return _PAPER_VICTIM_GT_RULES
 
 
 def process_jsonl_file(
@@ -267,6 +413,10 @@ def process_jsonl_file(
     }
 
     classified_entries = []
+    gt_meta = _paper_victim_gt_meta() if victim_type == "paper-victim" else {}
+    meta_suffix = ""
+    if victim_type == "paper-victim" and gt_meta.get("sha256"):
+        meta_suffix = gt_meta.get("sha256", "")[:12]
 
     try:
         with open(input_path, "r", encoding="utf-8") as f:
@@ -281,8 +431,10 @@ def process_jsonl_file(
 
                     # Classify
                     if victim_type == "paper-victim":
+                        req_method, req_path = _extract_normalized_request_context(entry)
                         fam = _paper_victim_family_from_request(entry)
-                        if fam:
+                        gt_rule = _paper_victim_rule_from_request(entry)
+                        if fam != "others" and fam is not None:
                             attack_label = create_attack_label(fam, matched_rules=[])
                             attack_label.update(
                                 {
@@ -290,9 +442,22 @@ def process_jsonl_file(
                                     "classification_threshold": None,
                                     "family_scores": {},
                                     "threshold_passed": True,
-                                    "classification_method": "paper_victim_endpoint_mapping_v1",
+                                    "classification_method": f"{_PAPER_VICTIM_GT_VERSION}#{meta_suffix}" if meta_suffix else _PAPER_VICTIM_GT_VERSION,
                                 }
                             )
+                            if gt_rule:
+                                attack_label["ground_truth"] = {
+                                    "victim": "paper-victim",
+                                    "rule_id": str(gt_rule.get("item_id") or ""),
+                                    "oracle_type": str(gt_rule.get("oracle_type") or ""),
+                                    "path": str(gt_rule.get("path") or ""),
+                                    "match": str(gt_rule.get("match") or ""),
+                                    "references": gt_rule.get("source") or gt_rule.get("references") or {},
+                                    "taxonomy": gt_rule.get("taxonomy") or {},
+                                    "request_path": req_path,
+                                    "request_method": req_method,
+                                    "manifest": gt_meta,
+                                }
                             classified = entry.copy()
                             classified["attack_label"] = attack_label
 
@@ -305,7 +470,37 @@ def process_jsonl_file(
                             classified["attack_label"]["wstg_id"] = success_result.get("wstg_id")
                             classified["attack_label"]["wstg_url"] = success_result.get("wstg_url")
                         else:
-                            classified = classify_entry(entry, verbose)
+                            attack_label = create_attack_label("others", matched_rules=[])
+                            attack_label.update(
+                                {
+                                    "anomaly_score": None,
+                                    "classification_threshold": None,
+                                    "family_scores": {},
+                                    "threshold_passed": True,
+                                    "classification_method": f"{_PAPER_VICTIM_GT_VERSION}_others",
+                                }
+                            )
+                            attack_label["ground_truth"] = {
+                                "victim": "paper-victim",
+                                "rule_id": "",
+                                "oracle_type": "",
+                                "path": "",
+                                "match": "",
+                                "references": {},
+                                "taxonomy": {},
+                                    "request_path": req_path,
+                                    "request_method": req_method,
+                                    "unmapped_reason": "no_manifest_rule_match",
+                                    "manifest": gt_meta,
+                                }
+                            classified = entry.copy()
+                            classified["attack_label"] = attack_label
+                            classified["attack_label"]["success"] = False
+                            classified["attack_label"]["success_evidence"] = ""
+                            classified["attack_label"]["success_verdict"] = "not_attack"
+                            classified["attack_label"]["requires_context"] = False
+                            classified["attack_label"]["wstg_id"] = None
+                            classified["attack_label"]["wstg_url"] = None
                     else:
                         classified = classify_entry(entry, verbose)
                     classified_entries.append(classified)
@@ -603,3 +798,7 @@ Examples:
 
 if __name__ == "__main__":
     main()
+
+
+
+

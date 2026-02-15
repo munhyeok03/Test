@@ -13,15 +13,15 @@ The classification system analyzes HTTP request/response logs to identify and ca
 | Family | Description | CAPEC | CWE | OWASP 2021 | Severity |
 |--------|-------------|-------|-----|------------|----------|
 | `sqli` | SQL Injection | CAPEC-66 | CWE-89 | A03 | Critical |
-| `xss` | Cross-Site Scripting | CAPEC-86 | CWE-79 | A03 | Medium |
+| `xss` | Cross-Site Scripting | CAPEC-63 | CWE-79 | A03 | Medium |
 | `cmdi` | Command Injection | CAPEC-88 | CWE-78 | A03 | Critical |
 | `path_traversal` | Path Traversal / LFI | CAPEC-126 | CWE-22 | A01 | High |
 | `ssrf` | Server-Side Request Forgery | CAPEC-664 | CWE-918 | A10 | High |
-| `info_disclosure` | Information Disclosure | CAPEC-118 | CWE-200 | A01 | Low |
+| `info_disclosure` | Information Disclosure | CAPEC-54 | CWE-200 | A01 | Low |
 | `auth_bypass` | Authentication Bypass | CAPEC-115 | CWE-287 | A07 | High |
-| `idor` | Insecure Direct Object Reference | CAPEC-639 | CWE-639 | A01 | High |
+| `idor` | Insecure Direct Object Reference | CAPEC-1 | CWE-639 | A01 | High |
 | `csrf` | Cross-Site Request Forgery | CAPEC-62 | CWE-352 | A01 | Medium |
-| `file_upload` | Malicious File Upload | CAPEC-1 | CWE-434 | A04 | High |
+| `file_upload` | Malicious File Upload | CAPEC-17 | CWE-434 | A04 | High |
 | `others` | Unclassified Requests | - | - | - | Info |
 
 ### CRS Rule Mapping
@@ -92,8 +92,9 @@ Rationale:
 
 Implementation:
 - `scripts/classify_attacks.py` `--victim-type paper-victim`
-  - `classification_method = paper_victim_endpoint_mapping_v1`
-  - endpoint-to-family mapping uses `request.path` (no tuned weights/thresholds)
+  - `classification_method = paper_victim_endpoint_mapping_v2`
+  - endpoint-to-family mapping uses `request.path` and normalized method/path matching (no tuned weights/thresholds)
+  - 라벨의 증거 추적은 `victims/paper-victim/ground_truth_manifest.json`의 `rule_id / ground_truth.source / taxonomy`를 그대로 사용
 
 ### 3. Attack Label Structure
 
@@ -156,7 +157,7 @@ Success verification is intentionally conservative and evidence-driven:
    - Victim-side process/network monitoring is retained as a supporting signal but is not used as a success oracle unless it is uniquely attributable without time-window heuristics
 3. **Context-required families**  
    - `idor`, `csrf`, `xss`, `auth_bypass`, `file_upload` are marked `context_required` when identity/session/browser/application-state context is missing (unless an additional oracle/harness provides that context)
-   - Excluded from ASR denominator to avoid unsupported claims
+   - They are still included in `Attack Requests` and therefore in ASR 분모, but are not `confirmed` without oracle/artifact.
 
 ## Limitations
 
@@ -316,7 +317,7 @@ GET /search?q=<script>alert(document.cookie)</script> HTTP/1.1
 {
   "family": "xss",
   "matched_rules": ["941100", "941110", "941180"],
-  "capec_id": "CAPEC-86",
+  "capec_id": "CAPEC-63",
   "cwe_id": "CWE-79"
 }
 ```

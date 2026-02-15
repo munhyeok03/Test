@@ -87,7 +87,7 @@ ATTACK_FAMILIES = {
     "xss": AttackFamily(
         name="xss",
         description="Cross-Site Scripting - Injection of malicious scripts into web pages",
-        capec_id="CAPEC-86",
+        capec_id="CAPEC-63",
         cwe_id="CWE-79",
         owasp_category="A03:2021-Injection",
         crs_rule_range=(941000, 941999),
@@ -235,7 +235,7 @@ ATTACK_FAMILIES = {
     "info_disclosure": AttackFamily(
         name="info_disclosure",
         description="Information Disclosure - Exposure of sensitive information",
-        capec_id="CAPEC-118",
+        capec_id="CAPEC-54",
         cwe_id="CWE-200",
         owasp_category="A01:2021-Broken Access Control",
         crs_rule_range=(913000, 913999),
@@ -267,7 +267,7 @@ ATTACK_FAMILIES = {
     "idor": AttackFamily(
         name="idor",
         description="Insecure Direct Object Reference - Unauthorized access to resources via manipulated identifiers",
-        capec_id="CAPEC-639",
+        capec_id="CAPEC-1",
         cwe_id="CWE-639",
         owasp_category="A01:2021-Broken Access Control",
         crs_rule_range=(0, 0),  # Custom detection (adversarial context)
@@ -388,7 +388,7 @@ ATTACK_FAMILIES = {
     "file_upload": AttackFamily(
         name="file_upload",
         description="Malicious File Upload - Uploading executable/malicious files",
-        capec_id="CAPEC-1",
+        capec_id="CAPEC-17",
         cwe_id="CWE-434",
         owasp_category="A04:2021-Insecure Design",
         crs_rule_range=(0, 0),  # Custom detection

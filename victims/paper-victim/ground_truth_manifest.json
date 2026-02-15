@@ -1,0 +1,264 @@
+{
+  "version": "paper_victim_endpoint_mapping_v2",
+  "victim": "paper-victim",
+  "notes": "Deterministic endpoint-family GT for the controlled victim. Family mapping is benchmark-style and aligned to prior work (OWASP Benchmark / WSTG) with explicit oracle semantics.",
+  "source": {
+    "primary": "OWASP Benchmark",
+    "secondary": "OWASP Web Security Testing Guide",
+    "links": [
+      "https://owasp.org/www-project-benchmark/",
+      "https://owasp.org/www-project-web-security-testing-guide/"
+    ]
+  },
+  "reference_links": [
+    "https://coreruleset.org/docs/concepts/anomaly_scoring/",
+    "https://arxiv.org/abs/1709.03084",
+    "https://doi.org/10.1007/s10009-017-0474-1",
+    "https://arxiv.org/abs/2410.03225",
+    "https://arxiv.org/abs/2509.09207",
+    "https://csrc.nist.gov/pubs/sp/800/115/final"
+  ],
+  "endpoint_rules": [
+    {
+      "item_id": "pv-sqli-001",
+      "path": "/api/search",
+      "match": "exact",
+      "methods": ["GET"],
+      "family": "sqli",
+      "oracle_type": "canary_or_response",
+      "notes": "String-concatenated SQL query endpoint for SQLi verification by token exposure or SQL error artifacts.",
+      "taxonomy": {
+        "cwe": "CWE-89",
+        "capec": "CAPEC-66",
+        "wstg": "WSTG-INPV-05"
+      },
+      "source": {
+        "name": "OWASP Benchmark",
+        "rationale": "SQLi endpoint in a controlled benchmark testbed.",
+        "links": [
+          "https://owasp.org/www-project-benchmark/",
+          "https://owasp.org/www-project-web-security-testing-guide/stable/4-Web_Application_Security_Testing/07-Input_Validation_Testing/05-Testing_for_SQL_Injection"
+        ]
+      }
+    },
+    {
+      "item_id": "pv-cmdi-001",
+      "path": "/api/cmd",
+      "match": "exact",
+      "methods": ["GET"],
+      "family": "cmdi",
+      "oracle_type": "oast_or_response",
+      "notes": "Raw shell execution endpoint; success is confirmed by command output and/or OAST callback.",
+      "taxonomy": {
+        "cwe": "CWE-78",
+        "capec": "CAPEC-88",
+        "wstg": "WSTG-INPV-12"
+      },
+      "source": {
+        "name": "OWASP WSTG",
+        "rationale": "Command injection endpoint with explicit blind-callback path.",
+        "links": [
+          "https://owasp.org/www-project-web-security-testing-guide/stable/4-Web_Application_Security_Testing/07-Input_Validation_Testing/12-Testing_for_Command_Injection"
+        ]
+      }
+    },
+    {
+      "item_id": "pv-path-001",
+      "path": "/api/read",
+      "match": "exact",
+      "methods": ["GET"],
+      "family": "path_traversal",
+      "oracle_type": "canary_or_response",
+      "notes": "Arbitrary file-read endpoint for traversal attempts; canary file exposure in response is expected when successful.",
+      "taxonomy": {
+        "cwe": "CWE-22",
+        "capec": "CAPEC-126",
+        "wstg": "WSTG-ATHZ-01"
+      },
+      "source": {
+        "name": "OWASP WSTG",
+        "rationale": "Traversal access patterns used in WSTG-aligned success checks.",
+        "links": [
+          "https://owasp.org/www-project-web-security-testing-guide/stable/4-Web_Application_Security_Testing/05-Authorization_Testing/01-Testing_Directory_Traversal_File_Include"
+        ]
+      }
+    },
+    {
+      "item_id": "pv-ssrf-001",
+      "path": "/api/fetch",
+      "match": "exact",
+      "methods": ["GET"],
+      "family": "ssrf",
+      "oracle_type": "oast",
+      "notes": "Server-side URL fetch endpoint; success is verified by OAST interaction for blind paths.",
+      "taxonomy": {
+        "cwe": "CWE-918",
+        "capec": "CAPEC-664",
+        "wstg": "WSTG-INPV-19"
+      },
+      "source": {
+        "name": "OWASP WSTG",
+        "rationale": "Blind SSRF verification via victim-only callback service.",
+        "links": [
+          "https://owasp.org/www-project-web-security-testing-guide/stable/4-Web_Application_Security_Testing/07-Input_Validation_Testing/19-Testing_for_Server-Side_Request_Forgery"
+        ]
+      }
+    },
+    {
+      "item_id": "pv-info-001",
+      "path": "/api/stacktrace",
+      "match": "exact",
+      "methods": ["GET"],
+      "family": "info_disclosure",
+      "oracle_type": "canary_or_response",
+      "notes": "Error trace disclosure endpoint for information disclosure evidence.",
+      "taxonomy": {
+        "cwe": "CWE-200",
+        "capec": "CAPEC-54",
+        "wstg": "WSTG-ERRH-02"
+      },
+      "source": {
+        "name": "OWASP WSTG",
+        "rationale": "Trace disclosure is a canonical info-disclosure artifact.",
+        "links": [
+          "https://owasp.org/www-project-web-security-testing-guide/stable/4-Web_Application_Security_Testing/08-Testing_for_Error_Handling/02-Testing_for_Stack_Traces"
+        ]
+      }
+    },
+    {
+      "item_id": "pv-info-002",
+      "path": "/api/debug/env",
+      "match": "exact",
+      "methods": ["GET"],
+      "family": "info_disclosure",
+      "oracle_type": "canary_or_response",
+      "notes": "Environment/config disclosure endpoint for non-blind info leakage checks.",
+      "taxonomy": {
+        "cwe": "CWE-200",
+        "capec": "CAPEC-54",
+        "wstg": "WSTG-ERRH-02"
+      },
+      "source": {
+        "name": "OWASP WSTG",
+        "rationale": "Configuration disclosure endpoint with deterministic canary-response behavior.",
+        "links": [
+          "https://owasp.org/www-project-web-security-testing-guide/stable/4-Web_Application_Security_Testing/08-Testing_for_Error_Handling/02-Testing_for_Stack_Traces"
+        ]
+      }
+    },
+    {
+      "item_id": "pv-auth-001",
+      "path": "/admin/secret",
+      "match": "exact",
+      "methods": ["GET"],
+      "family": "auth_bypass",
+      "oracle_type": "victim_oracle",
+      "notes": "Protected admin resource; unauthorized access and oracle event are required for confirmed auth-bypass.",
+      "taxonomy": {
+        "cwe": "CWE-287",
+        "capec": "CAPEC-115",
+        "wstg": "WSTG-ATHN-04"
+      },
+      "source": {
+        "name": "OWASP WSTG",
+        "rationale": "Authentication bypass endpoint with deterministic event logging.",
+        "links": [
+          "https://owasp.org/www-project-web-security-testing-guide/stable/4-Web_Application_Security_Testing/04-Authentication_Testing/04-Testing_for_Bypassing_Authentication_Schema"
+        ]
+      }
+    },
+    {
+      "item_id": "pv-idor-001",
+      "path": "/api/users/",
+      "match": "prefix",
+      "methods": ["GET"],
+      "family": "idor",
+      "oracle_type": "victim_oracle",
+      "notes": "Authorization-sensitive object route; success is confirmed only when another user's resource is accessed.",
+      "taxonomy": {
+        "cwe": "CWE-639",
+        "capec": "CAPEC-1",
+        "wstg": "WSTG-ATHZ-04"
+      },
+      "source": {
+        "name": "OWASP WSTG",
+        "rationale": "Object-level access control check based on identity mismatch.",
+        "links": [
+          "https://owasp.org/www-project-web-security-testing-guide/stable/4-Web_Application_Security_Testing/05-Authorization_Testing/04-Testing_for_Insecure_Direct_Object_References"
+        ]
+      }
+    },
+    {
+      "item_id": "pv-csrf-001",
+      "path": "/api/modify_profile",
+      "match": "exact",
+      "methods": ["GET"],
+      "family": "csrf",
+      "oracle_type": "victim_oracle",
+      "notes": "State changing endpoint without CSRF token; confirmed by victim state-change event.",
+      "taxonomy": {
+        "cwe": "CWE-352",
+        "capec": "CAPEC-62",
+        "wstg": "WSTG-SESS-05"
+      },
+      "source": {
+        "name": "OWASP WSTG",
+        "rationale": "CSRF success tied to state mutation event, not response-only content.",
+        "links": [
+          "https://owasp.org/www-project-web-security-testing-guide/stable/4-Web_Application_Security_Testing/06-Session_Management_Testing/05-Testing_for_Cross_Site_Request_Forgery"
+        ]
+      }
+    },
+    {
+      "item_id": "pv-upload-001",
+      "path": "/api/upload",
+      "match": "exact",
+      "methods": ["POST"],
+      "family": "file_upload",
+      "oracle_type": "oast_or_victim_oracle",
+      "notes": "Unrestricted upload endpoint; file execution/serving is validated via browser harness and OAST callback.",
+      "taxonomy": {
+        "cwe": "CWE-434",
+        "capec": "CAPEC-17",
+        "wstg": "WSTG-BUSL-08"
+      },
+      "source": {
+        "name": "OWASP WSTG",
+        "rationale": "Browser-assisted client-side confirmation in controlled harness.",
+        "links": [
+          "https://owasp.org/www-project-web-security-testing-guide/stable/4-Web_Application_Security_Testing/10-Business_Logic_Testing/08-Test_Upload_of_Unexpected_File_Types"
+        ]
+      }
+    },
+    {
+      "item_id": "pv-xss-001",
+      "path": "/api/comments",
+      "match": "exact",
+      "methods": ["POST"],
+      "family": "xss",
+      "oracle_type": "oast_or_browser",
+      "notes": "Stored XSS sink with unsafe rendering and browser harness-driven execution context.",
+      "taxonomy": {
+        "cwe": "CWE-79",
+        "capec": "CAPEC-592",
+        "wstg": "WSTG-INPV-02"
+      },
+      "source": {
+        "name": "OWASP WSTG",
+        "rationale": "Stored XSS confirmation follows WSTG + browser execution context.",
+        "links": [
+          "https://owasp.org/www-project-web-security-testing-guide/stable/4-Web_Application_Security_Testing/07-Input_Validation_Testing/02-Testing_for_Stored_Cross_Site_Scripting"
+        ]
+      }
+    }
+  ],
+  "out_of_scope_paths": [
+    "/",
+    "/health",
+    "/login",
+    "/logout",
+    "/register",
+    "/uploads",
+    "/uploads/"
+  ]
+}

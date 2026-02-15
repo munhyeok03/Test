@@ -25,7 +25,7 @@ OUTPUT_FORMAT_FILE=""
 PARALLEL=true
 KEEP_CONTAINERS=false
 BUILD_IMAGES=false
-VICTIM_TYPE="juice-shop"
+VICTIM_TYPE="paper-victim"
 CUSTOM_VICTIM_PORT=""
 CUSTOM_VICTIM_HEALTHCHECK=""
 
@@ -76,7 +76,7 @@ ${YELLOW}Agent Selection (at least one required):${NC}
   --all                     Use all agents
 
 ${YELLOW}Options:${NC}
-  --victim <type|image>     Victim server (default: juice-shop)
+  --victim <type|image>     Victim server (default: paper-victim)
                             Presets: juice-shop, webgoat, vuln-shop, bentoml, mlflow, gradio, paper-victim
                             Or any Docker image tag (e.g., nginx:latest, myapp:v1)
   --victim-port <port>      Port for custom victim image (default: 3000)
@@ -110,6 +110,7 @@ ${YELLOW}Examples:${NC}
   $0 --prompt prompts/test.txt --claude --victim myapp:v1 --victim-port 8080
 
 ${YELLOW}Notes:${NC}
+  - For objective 10-family benchmark analysis, run with `--victim paper-victim`.
   - Each agent runs in an isolated Docker network with its own victim container
   - Results are saved to ./results/ directory
   - Ensure .env file exists with API keys (copy from .env.example)
@@ -1129,89 +1130,56 @@ with open(in_path, 'r', encoding='utf-8', errors='replace') as f:
         log_warn "verify_success.py not found, skipping ASR verification"
     fi
 
+    # Compile paper-victim GT-mapped evidence for publication-ready tables.
+    if [[ "$VICTIM_TYPE" == "paper-victim" ]]; then
+        log_step "Collecting paper-victim GT evidence inputs..."
+        if [[ -f "./scripts/collect_paper_victim_gt_evidence.py" ]]; then
+            local analysis_dir="./${SESSION_DIR}/analysis"
+            local gt_json="${analysis_dir}/paper_victim_ground_truth_evidence.json"
+            local gt_md="${analysis_dir}/paper_victim_ground_truth_evidence.md"
+            if ls "${analysis_dir}"/*_attack_labeled.jsonl 1>/dev/null 2>&1; then
+                if python3 ./scripts/collect_paper_victim_gt_evidence.py "./${SESSION_DIR}" \
+                    --output-json "$gt_json" \
+                    --output-markdown "$gt_md" > /dev/null 2>&1; then
+                    log_info "Paper-victim GT evidence JSON: ./${SESSION_DIR}/analysis/paper_victim_ground_truth_evidence.json"
+                    log_info "Paper-victim GT evidence markdown: ./${SESSION_DIR}/analysis/paper_victim_ground_truth_evidence.md"
+                else
+                    log_warn "collect_paper_victim_gt_evidence.py executed with errors; skipping GT evidence artifact"
+                fi
+            else
+                log_warn "No attack-labeled logs found, skipping paper-victim GT evidence extraction"
+            fi
+        else
+            log_warn "collect_paper_victim_gt_evidence.py not found, skipping paper-victim GT evidence extraction"
+        fi
+    fi
+
+    # Export reproducible bias tables for all agents
+    log_step "Computing bias tables from session artifacts..."
+    if [[ -f "./scripts/compute_bias_tables.py" ]]; then
+        local analysis_dir="./${SESSION_DIR}/analysis"
+        local bias_output="${analysis_dir}/bias_metrics.json"
+        if ls "${analysis_dir}"/*_attack_labeled.jsonl 1>/dev/null 2>&1; then
+            if python3 ./scripts/compute_bias_tables.py "./${SESSION_DIR}" --output "$bias_output" > "./${SESSION_DIR}/analysis/bias_report.md" 2>/dev/null; then
+                log_info "Bias report generated: ./${SESSION_DIR}/analysis/bias_report.md"
+                log_info "Bias raw JSON generated: ./${SESSION_DIR}/analysis/bias_metrics.json"
+            else
+                log_warn "compute_bias_tables.py executed with errors; skipping bias report generation"
+            fi
+        else
+            log_warn "No attack-labeled logs found, skipping bias table generation"
+        fi
+    else
+        log_warn "compute_bias_tables.py not found, skipping bias table generation"
+    fi
+
     # Validate session artifacts (quick integrity checks; no decision heuristics).
     log_step "Validating session artifacts..."
-    python3 - << 'PYEOF' "./${SESSION_DIR}" 2>/dev/null || true
-import json
-import sys
-from pathlib import Path
-
-session_dir = Path(sys.argv[1])
-http_dir = session_dir / "http-logs"
-analysis_dir = session_dir / "analysis"
-
-report = {
-    "http_logs": {},
-    "attack_summary": {},
-    "vulnerability_results": {},
-}
-
-# 1) http-logger trace id / request-id presence (for oracle correlation)
-for p in sorted(http_dir.glob("*_http.jsonl")):
-    agent = p.stem.replace("_http", "")
-    has_trace_id = 0
-    has_xrid = 0
-    has_logger_version = 0
-    total = 0
-    try:
-        with p.open("r", encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
-                if not line:
-                    continue
-                total += 1
-                e = json.loads(line)
-                if e.get("trace_id"):
-                    has_trace_id += 1
-                if e.get("logger_version"):
-                    has_logger_version += 1
-                h = ((e.get("request") or {}).get("headers") or {})
-                if ("X-Request-ID" in h) or ("X-Request-Id" in h):
-                    has_xrid += 1
-                if total >= 20:
-                    break
-    except Exception:
-        pass
-    report["http_logs"][agent] = {
-        "sampled": total,
-        "with_trace_id": has_trace_id,
-        "with_x_request_id_header": has_xrid,
-        "with_logger_version": has_logger_version,
-    }
-
-# 2) attack_summary consistency (avoid double-processing bugs)
-summary_path = analysis_dir / "attack_summary.json"
-if summary_path.exists():
-    try:
-        d = json.loads(summary_path.read_text(encoding="utf-8"))
-        total = int(d.get("total_requests") or 0)
-        by_agent = d.get("by_agent") or {}
-        total_by_agents = sum(int((by_agent.get(a) or {}).get("total_requests") or 0) for a in by_agent.keys())
-        report["attack_summary"] = {
-            "total_requests": total,
-            "sum_by_agent_total_requests": total_by_agents,
-            "consistent": (total == total_by_agents) if by_agent else True,
-        }
-    except Exception:
-        report["attack_summary"] = {"error": "failed_to_parse"}
-
-# 3) vulnerability_results structure (oracle summary should be present)
-vr_path = analysis_dir / "vulnerability_results.json"
-if vr_path.exists():
-    try:
-        d = json.loads(vr_path.read_text(encoding="utf-8"))
-        by_agent = d.get("by_agent") or {}
-        report["vulnerability_results"] = {
-            "agents": sorted(list(by_agent.keys())),
-            "oracle_keys_present": {a: ("oracle" in (by_agent.get(a) or {})) for a in by_agent.keys()},
-        }
-    except Exception:
-        report["vulnerability_results"] = {"error": "failed_to_parse"}
-
-out_path = analysis_dir / "session_validation.json"
-out_path.write_text(json.dumps(report, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
-print(f"[validation] wrote {out_path}")
-PYEOF
+    if python3 ./scripts/session_validation.py "./${SESSION_DIR}" --victim "$VICTIM_TYPE"; then
+        log_info "Session validation written to ./${SESSION_DIR}/analysis/session_validation.json"
+    else
+        log_warn "session_validation.py reported issues; validation file may be partial"
+    fi
 
     # Cleanup
     if [[ "$KEEP_CONTAINERS" == "false" ]]; then
