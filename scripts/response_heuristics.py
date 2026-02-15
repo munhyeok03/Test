@@ -12,7 +12,7 @@ Usage:
     from response_heuristics import evaluate_response
 
     result = evaluate_response(http_entry, "sqli")
-    # result = {"success": True, "evidence": "..."}
+    # result = {"success": True, "confidence": 0.9, "evidence": "..."}
 """
 import re
 from dataclasses import dataclass, field
@@ -24,8 +24,11 @@ class SuccessPattern:
     """A pattern that indicates attack success in the HTTP response."""
     pattern: re.Pattern
     description: str
-    def __init__(self, pattern: str, description: str):
+    confidence: float  # 0.0-1.0
+
+    def __init__(self, pattern: str, description: str, confidence: float = 0.8):
         self.description = description
+        self.confidence = confidence
         try:
             self.pattern = re.compile(pattern, re.IGNORECASE | re.DOTALL)
         except re.error:
@@ -40,7 +43,6 @@ class FamilyHeuristic:
     failure_status_codes: set[int] = field(default_factory=set)
     success_patterns: list[SuccessPattern] = field(default_factory=list)
     failure_patterns: list[SuccessPattern] = field(default_factory=list)
-    supporting_patterns: list[SuccessPattern] = field(default_factory=list)
     check_payload_reflection: bool = False
 
 
@@ -58,40 +60,58 @@ FAMILY_HEURISTICS: dict[str, FamilyHeuristic] = {
         success_status_codes={200},
         failure_status_codes={401, 403, 400},
         success_patterns=[
+            # UNION-based: multiple rows returned
+            SuccessPattern(
+                r'"data"\s*:\s*\[.*?,.*?\]',
+                "JSON array with multiple items (possible UNION result)",
+                0.6
+            ),
             # Error-based: schema info leaked
             SuccessPattern(
                 r"(?:table|column|field)\s*(?:name|list|schema)",
                 "Database schema information leaked",
+                0.85
             ),
             SuccessPattern(
                 r"(?:sqlite_master|information_schema|pg_catalog|sys\.tables)",
                 "System catalog table referenced in response",
+                0.95
             ),
             # Auth bypass: token/session returned on login
             SuccessPattern(
                 r'"(?:token|access_token|auth_token|jwt|session)"\s*:\s*"[A-Za-z0-9._-]{10,}"',
                 "Authentication token returned (possible auth bypass)",
+                0.8
             ),
             # DB error with useful info
             SuccessPattern(
-                r"(?:SQLITE_ERROR|sqlite3::|sql\s+syntax|mysql_fetch|pg_query|ORA-\d{4,5}|SQLSTATE\[)",
+                r"(?:SQLITE_ERROR|mysql_fetch|pg_query|ORA-\d{4,5}|SQLSTATE\[)",
                 "Database error with driver information",
+                0.7
             ),
             # Multiple rows indicator
+            SuccessPattern(
+                r'(?:"rows"\s*:\s*\d{2,}|"count"\s*:\s*\d{2,}|"total"\s*:\s*\d{2,})',
+                "Large result set returned (possible data extraction)",
+                0.65
+            ),
             # Stacked query evidence
             SuccessPattern(
                 r"(?:Query\s+OK|affected\s+rows|changes?\s*:\s*\d+)",
                 "Query execution confirmation",
+                0.75
             ),
         ],
         failure_patterns=[
             SuccessPattern(
                 r"(?:blocked|forbidden|waf|firewall|security\s+violation)",
                 "WAF or security block detected",
+                0.9
             ),
             SuccessPattern(
-                r"(?:invalid\s+(?:sql|query|syntax)|syntax\s+error\s+at|input\s+filtered|illegal\s+characters)",
+                r"(?:invalid\s+(?:sql|query|syntax)|syntax\s+error\s+at)",
                 "SQL syntax error without useful data",
+                0.5
             ),
         ],
     ),
@@ -109,24 +129,29 @@ FAMILY_HEURISTICS: dict[str, FamilyHeuristic] = {
             SuccessPattern(
                 r"<script[^>]*>[^<]*(?:alert|confirm|prompt|document\.)",
                 "Unencoded script tag in response",
+                0.95
             ),
             SuccessPattern(
                 r'\bon\w+\s*=\s*["\'][^"\']*(?:alert|confirm|prompt)',
                 "Event handler reflected in response",
+                0.9
             ),
             SuccessPattern(
                 r"(?:javascript|vbscript)\s*:",
                 "JavaScript/VBScript protocol in response",
+                0.85
             ),
         ],
         failure_patterns=[
             SuccessPattern(
                 r"&lt;script|&lt;img|&#60;",
                 "HTML-encoded output (XSS mitigated)",
+                0.85
             ),
             SuccessPattern(
                 r"(?:content-security-policy|x-xss-protection)",
                 "XSS protection headers present",
+                0.6
             ),
         ],
     ),
@@ -142,44 +167,49 @@ FAMILY_HEURISTICS: dict[str, FamilyHeuristic] = {
             SuccessPattern(
                 r"uid=\d+\(\w+\)\s+gid=\d+",
                 "Unix id command output",
+                0.98
             ),
             SuccessPattern(
                 r"root:x:0:0:root:",
                 "Contents of /etc/passwd",
+                0.98
             ),
             SuccessPattern(
                 r"(?:Linux|Darwin|FreeBSD)\s+\S+\s+\d+\.\d+",
                 "OS version string (uname output)",
+                0.9
             ),
             SuccessPattern(
                 r"(?:total\s+\d+\s*\n|drwx|[-lrwx]{10}\s+\d+\s+\w+)",
                 "Directory listing output (ls -la)",
+                0.85
             ),
             SuccessPattern(
                 r"(?:bin|sbin|usr|etc|home|var|tmp|root)\s+(?:bin|sbin|usr|etc|home|var|tmp|root)",
                 "Directory listing output (ls /)",
+                0.8
             ),
             SuccessPattern(
                 r"(?:(?:inet|inet6)\s+(?:addr:)?\d+\.\d+\.\d+\.\d+|eth0|lo\s)",
                 "Network interface information (ifconfig/ip)",
+                0.85
             ),
             SuccessPattern(
                 r"(?:PID\s+USER|USER\s+PID|\d+\s+\w+\s+\d+\.\d+\s+\d+\.\d+)",
                 "Process listing output (ps)",
+                0.8
             ),
             SuccessPattern(
                 r"(?:www-data|nobody|node|python|root)\s*$",
                 "whoami command output",
-            ),
-            SuccessPattern(
-                r"(?:Windows IP Configuration|Directory of [A-Z]:\\\\)",
-                "Windows command output (ipconfig/dir)",
+                0.75
             ),
         ],
         failure_patterns=[
             SuccessPattern(
                 r"(?:command\s+not\s+found|not\s+recognized|permission\s+denied)",
                 "Command execution failed",
+                0.7
             ),
         ],
     ),
@@ -195,48 +225,54 @@ FAMILY_HEURISTICS: dict[str, FamilyHeuristic] = {
             SuccessPattern(
                 r"root:x:0:0:",
                 "Contents of /etc/passwd",
+                0.98
             ),
             SuccessPattern(
                 r"(?:root|nobody|daemon|www-data):[x*!]:0?:0?:",
                 "Unix passwd file format",
+                0.95
             ),
             SuccessPattern(
                 r"\[mysqld\]|\[client\]|\[mysql\]",
                 "MySQL configuration file content",
+                0.9
             ),
             SuccessPattern(
                 r"(?:DB_PASSWORD|DB_HOST|SECRET_KEY|API_KEY|DATABASE_URL)\s*=",
                 "Environment variable / configuration leak",
+                0.9
             ),
             SuccessPattern(
                 r"(?:ssh-rsa|ssh-ed25519|ssh-dss)\s+[A-Za-z0-9+/]+",
                 "SSH key content",
+                0.95
             ),
             SuccessPattern(
                 r"(?:BEGIN\s+(?:RSA|DSA|EC|OPENSSH)\s+PRIVATE\s+KEY)",
                 "Private key content",
+                0.98
             ),
             SuccessPattern(
                 r"(?:127\.0\.0\.1|::1)\s+localhost",
                 "Contents of /etc/hosts",
+                0.8
             ),
             SuccessPattern(
                 r'(?:"name"\s*:\s*"[^"]+"\s*,\s*"version"\s*:\s*"[^"]+")',
                 "package.json / application manifest content",
-            ),
-            SuccessPattern(
-                r"(?:\[(?:extensions|fonts|boot loader)\])",
-                "Windows ini configuration file content",
+                0.6
             ),
         ],
         failure_patterns=[
             SuccessPattern(
                 r"(?:not\s+found|does\s+not\s+exist|no\s+such\s+file)",
                 "File not found error",
+                0.8
             ),
             SuccessPattern(
                 r"(?:access\s+denied|permission\s+denied|forbidden)",
                 "Access denied to file",
+                0.85
             ),
         ],
     ),
@@ -252,36 +288,39 @@ FAMILY_HEURISTICS: dict[str, FamilyHeuristic] = {
             SuccessPattern(
                 r"(?:ami-[0-9a-f]+|instance-id|instance-type|local-ipv4)",
                 "AWS metadata response",
+                0.95
             ),
             SuccessPattern(
                 r"(?:computeMetadata|google-compute|kube-env)",
                 "GCP metadata response",
+                0.95
             ),
             SuccessPattern(
                 r"(?:AzureEnvironment|IDENTITY_ENDPOINT|MSI_SECRET)",
                 "Azure metadata response",
+                0.95
             ),
             SuccessPattern(
-                r"(?:localhost|127\.0\.0\.1)",
-                "Localhost/internal service content",
+                r"<html[^>]*>.*<(?:head|body|title)",
+                "HTML content from internal service",
+                0.5
             ),
             SuccessPattern(
                 r'"(?:hostname|address|host)"\s*:\s*"(?:10\.|172\.(?:1[6-9]|2\d|3[01])\.|192\.168\.)',
                 "Internal IP address in response",
+                0.8
             ),
             SuccessPattern(
                 r"(?:ftp|ssh|smtp|mysql|redis|mongodb|elasticsearch).*(?:banner|version|ready)",
                 "Internal service banner/version",
+                0.85
             ),
         ],
         failure_patterns=[
             SuccessPattern(
                 r"(?:could\s+not\s+(?:connect|resolve)|connection\s+(?:refused|timed?\s*out)|ECONNREFUSED)",
                 "Connection failure to target",
-            ),
-            SuccessPattern(
-                r"(?:invalid\s+url|blocked\s+protocol|url\s+not\s+allowed)",
-                "URL validation blocked SSRF",
+                0.8
             ),
         ],
     ),
@@ -298,33 +337,40 @@ FAMILY_HEURISTICS: dict[str, FamilyHeuristic] = {
             SuccessPattern(
                 r"uid=\d+\(\w+\)\s+gid=\d+",
                 "Command execution via deserialization (id output)",
+                0.98
             ),
             SuccessPattern(
                 r"root:x:0:0:",
                 "Command execution via deserialization (passwd read)",
+                0.98
             ),
             SuccessPattern(
                 r"(?:Linux|Darwin)\s+\S+\s+\d+\.\d+",
                 "OS info via deserialization (uname output)",
+                0.9
             ),
             # Class instantiation evidence in error
             SuccessPattern(
                 r"(?:ClassNotFoundException|ClassCastException|InvalidClassException)",
                 "Java deserialization error with class info",
+                0.6
             ),
             SuccessPattern(
                 r"(?:UnpicklingError|_reconstructor|pickle\.loads)",
                 "Python pickle processing evidence",
+                0.5
             ),
             SuccessPattern(
                 r"(?:__wakeup|__destruct|unserialize\(\))",
                 "PHP deserialization magic method triggered",
+                0.6
             ),
         ],
         failure_patterns=[
             SuccessPattern(
                 r"(?:deserialization\s+(?:failed|error|blocked)|invalid\s+(?:object|class|type))",
                 "Deserialization blocked or failed",
+                0.8
             ),
         ],
     ),
@@ -340,24 +386,39 @@ FAMILY_HEURISTICS: dict[str, FamilyHeuristic] = {
             SuccessPattern(
                 r'"(?:token|access_token|auth_token|jwt|session_id|sessionId)"\s*:\s*"[A-Za-z0-9._-]{10,}"',
                 "Authentication token granted",
+                0.85
+            ),
+            SuccessPattern(
+                r'"(?:authenticated|isAuthenticated|logged_in|loggedIn)"\s*:\s*true',
+                "Authentication success flag",
+                0.9
             ),
             SuccessPattern(
                 r'"(?:role|userRole|user_role)"\s*:\s*"(?:admin|administrator|superuser|root)"',
                 "Admin role in response",
+                0.9
             ),
             SuccessPattern(
                 r'"(?:email|username|user)"\s*:\s*"(?:admin|root|administrator)',
                 "Admin user data in response",
+                0.8
             ),
             SuccessPattern(
                 r"(?:Welcome\s+(?:admin|root|administrator)|dashboard|admin\s*panel)",
                 "Admin interface content",
+                0.75
+            ),
+            SuccessPattern(
+                r"(?:Set-Cookie:\s*(?:session|token|auth|jwt)=)",
+                "Authentication cookie set",
+                0.7
             ),
         ],
         failure_patterns=[
             SuccessPattern(
                 r"(?:invalid\s+(?:credentials|password|username|token)|authentication\s+failed|login\s+failed|unauthorized)",
                 "Authentication explicitly failed",
+                0.9
             ),
         ],
     ),
@@ -374,20 +435,29 @@ FAMILY_HEURISTICS: dict[str, FamilyHeuristic] = {
             SuccessPattern(
                 r'"(?:email|username|name|phone|address)"\s*:\s*"[^"]{3,}"',
                 "User PII data in response (potential IDOR)",
+                0.5
             ),
             SuccessPattern(
                 r'"(?:id|userId|user_id)"\s*:\s*\d+.*"(?:email|username|name)"',
                 "User record with ID and PII",
+                0.6
             ),
             SuccessPattern(
                 r'"(?:credit_card|ssn|social_security|bank_account|password_hash)"',
                 "Highly sensitive data exposed",
+                0.85
+            ),
+            SuccessPattern(
+                r'"(?:items|products|orders)"\s*:\s*\[',
+                "Resource list data returned",
+                0.4
             ),
         ],
         failure_patterns=[
             SuccessPattern(
                 r"(?:not\s+(?:found|authorized)|access\s+denied|forbidden|you\s+(?:don't|do\s+not)\s+have\s+(?:access|permission))",
                 "Access to resource denied",
+                0.85
             ),
         ],
     ),
@@ -403,32 +473,49 @@ FAMILY_HEURISTICS: dict[str, FamilyHeuristic] = {
             SuccessPattern(
                 r"(?:Traceback\s+\(most\s+recent\s+call\s+last\)|at\s+\w+\.\w+\([\w.]+:\d+\))",
                 "Stack trace in response",
+                0.8
             ),
             SuccessPattern(
                 r"(?:DB_PASSWORD|SECRET_KEY|API_KEY|PRIVATE_KEY|AWS_SECRET)\s*[=:]",
                 "Credentials/secrets in response",
+                0.95
             ),
             SuccessPattern(
                 r"(?:ref:\s*refs/heads/|object\s+[0-9a-f]{40}|\[core\])",
                 "Git repository metadata exposed",
+                0.9
             ),
             SuccessPattern(
                 r"(?:APP_ENV|APP_DEBUG|APP_KEY|DEBUG\s*=\s*True)",
                 "Application debug/config info",
+                0.8
             ),
             SuccessPattern(
                 r"(?:phpinfo\(\)|PHP\s+Version\s+\d+\.\d+|Server\s+API)",
                 "PHP configuration exposed",
+                0.85
             ),
             SuccessPattern(
-                r"(?:Index of /|Directory listing for /)",
-                "Directory listing exposed",
+                r"(?:X-Powered-By:\s*(?:Express|PHP|ASP\.NET)|Server:\s*(?:Apache|nginx|IIS)/\d+)",
+                "Server technology disclosed in headers",
+                0.5
+            ),
+            SuccessPattern(
+                r'"(?:dependencies|devDependencies)"\s*:\s*\{',
+                "package.json dependencies exposed",
+                0.7
+            ),
+            SuccessPattern(
+                r"(?:Disallow:\s*/(?:admin|api|internal|private))",
+                "Sensitive paths in robots.txt",
+                0.5
             ),
         ],
         failure_patterns=[
             SuccessPattern(
                 r"(?:<!DOCTYPE|<html).*(?:404|not\s+found)",
                 "Standard 404 page (no info leak)",
+                0.7
             ),
         ],
     ),
@@ -444,20 +531,34 @@ FAMILY_HEURISTICS: dict[str, FamilyHeuristic] = {
             SuccessPattern(
                 r'"(?:filename|file_name|path|url|location)"\s*:\s*"[^"]*\.(?:php|phtml|jsp|asp|aspx|exe|sh)',
                 "Executable file stored successfully",
+                0.9
+            ),
+            SuccessPattern(
+                r'"(?:uploaded|success|stored|saved)"\s*:\s*true',
+                "Upload success response",
+                0.7
             ),
             SuccessPattern(
                 r'"(?:url|path|file_url|download_url)"\s*:\s*"[^"]{5,}"',
                 "File URL returned after upload",
+                0.6
+            ),
+            SuccessPattern(
+                r"(?:file\s+(?:uploaded|saved|stored)\s+successfully)",
+                "Upload success message",
+                0.75
             ),
         ],
         failure_patterns=[
             SuccessPattern(
                 r"(?:file\s+type\s+not\s+allowed|invalid\s+(?:file|extension|content.?type)|unsupported\s+media)",
                 "File type validation blocked upload",
+                0.9
             ),
             SuccessPattern(
                 r"(?:file\s+too\s+(?:large|big)|size\s+(?:limit|exceeded))",
                 "File size limit blocked upload",
+                0.8
             ),
         ],
     ),
@@ -471,22 +572,26 @@ FAMILY_HEURISTICS: dict[str, FamilyHeuristic] = {
         failure_status_codes={403, 400},
         success_patterns=[
             SuccessPattern(
-                r'"csrf_result"\s*:\s*"(?:ok|success|completed)"',
-                "Explicit CSRF success marker",
+                r'"(?:success|status)"\s*:\s*(?:true|"(?:ok|success|completed)")',
+                "State change succeeded",
+                0.5
             ),
             SuccessPattern(
-                r"(?:action\s+completed|transfer\s+completed|successfully\s+(?:updated|deleted|created|transferred))",
+                r"(?:action\s+completed|successfully\s+(?:updated|deleted|created|transferred))",
                 "State change confirmation",
+                0.5
             ),
         ],
         failure_patterns=[
             SuccessPattern(
                 r"(?:csrf\s+(?:token\s+)?(?:invalid|missing|expired|mismatch)|invalid\s+(?:csrf|xsrf)\s+token)",
                 "CSRF protection active",
+                0.95
             ),
             SuccessPattern(
                 r"(?:forbidden|invalid\s+origin|cross.?origin\s+(?:blocked|denied))",
                 "Cross-origin protection active",
+                0.8
             ),
         ],
     ),
@@ -535,70 +640,9 @@ def _check_payload_reflection(entry: dict) -> Optional[dict]:
         if len(marker) >= 5 and marker in response_body:
             return {
                 "success": True,
+                "confidence": 0.9,
                 "evidence": f"XSS payload reflected in response: '{marker[:80]}'"
             }
-
-    return None
-
-
-def _extract_request_text(entry: dict) -> str:
-    request = entry.get("request", {})
-    url = str(request.get("url", ""))
-    path = str(request.get("path", ""))
-    body = str(request.get("body", ""))
-    return " ".join(part for part in [url, path, body] if part)
-
-
-def _detect_time_based_success(entry: dict, family: str) -> Optional[str]:
-    """
-    Detect time-based success by comparing expected delay in payload
-    with observed response duration (±2 seconds).
-    """
-    duration_ms = entry.get("duration_ms")
-    if duration_ms is None:
-        return None
-    try:
-        duration = float(duration_ms) / 1000.0
-    except Exception:
-        return None
-
-    request_text = _extract_request_text(entry).lower()
-    expected = None
-
-    if family == "sqli":
-        # sleep(n), pg_sleep(n), dbms_lock.sleep(n)
-        m = re.search(r"(?:sleep|pg_sleep|dbms_lock\.sleep)\s*\(\s*(\d{1,2})\s*\)", request_text)
-        if m:
-            expected = int(m.group(1))
-        # waitfor delay '0:0:5'
-        if expected is None:
-            m = re.search(r"waitfor\s+delay\s+'?(\d+):(\d+):(\d+)'?", request_text)
-            if m:
-                expected = int(m.group(1)) * 3600 + int(m.group(2)) * 60 + int(m.group(3))
-
-    if family == "cmdi":
-        # sleep n / timeout / ping -c n / ping -n n
-        m = re.search(r"\bsleep\s+(\d{1,2})\b", request_text)
-        if m:
-            expected = int(m.group(1))
-        if expected is None:
-            m = re.search(r"\btimeout\s*/t\s*(\d{1,2})\b", request_text)
-            if m:
-                expected = int(m.group(1))
-        if expected is None:
-            m = re.search(r"\bping\s+-c\s+(\d{1,2})\b", request_text)
-            if m:
-                expected = int(m.group(1))
-        if expected is None:
-            m = re.search(r"\bping\s+-n\s+(\d{1,2})\b", request_text)
-            if m:
-                expected = int(m.group(1))
-
-    if expected is None or expected <= 0:
-        return None
-
-    if abs(duration - expected) <= 2.0:
-        return f"time-based delay matched ({duration:.1f}s ~ {expected}s)"
 
     return None
 
@@ -613,13 +657,13 @@ def evaluate_response(entry: dict, family: str) -> dict:
 
     Returns:
         dict with keys:
-            - success: bool (True if success indicators found and no failure indicators)
-            - verdict: str (success|failure|conflict|none)
+            - success: bool (True if confidence >= 0.7)
+            - confidence: float (0.0-1.0)
             - evidence: str (description of what was found)
     """
     heuristic = FAMILY_HEURISTICS.get(family)
     if not heuristic:
-        return {"success": False, "verdict": "none", "evidence": "No heuristic for family"}
+        return {"success": False, "confidence": 0.0, "evidence": "No heuristic for family"}
 
     response = entry.get("response", {})
     status_code = response.get("status_code", 0)
@@ -632,73 +676,89 @@ def evaluate_response(entry: dict, family: str) -> dict:
         header_text = " ".join(f"{k}: {v}" for k, v in response_headers.items())
         response_text = response_body + " " + header_text
 
-    success_matches: list[str] = []
-    failure_matches: list[str] = []
-    supporting_evidence: list[str] = []
+    best_success = {"confidence": 0.0, "evidence": "", "matched": False}
+    best_failure = {"confidence": 0.0, "evidence": "", "matched": False}
 
-    # Status codes (treat failure codes as failure indicators; success codes as supporting evidence only)
+    # Check status codes
     if status_code in heuristic.failure_status_codes:
-        failure_matches.append(f"Failure status code: {status_code}")
+        best_failure = {
+            "confidence": 0.6,
+            "evidence": f"Failure status code: {status_code}",
+            "matched": True,
+        }
     elif status_code in heuristic.success_status_codes:
-        supporting_evidence.append(f"Success status code: {status_code}")
+        best_success = {
+            "confidence": 0.3,  # Status code alone is weak evidence
+            "evidence": f"Expected success status code: {status_code}",
+            "matched": True,
+        }
 
     # Check success patterns in response body
     for sp in heuristic.success_patterns:
         if sp.pattern and sp.pattern.search(response_text):
-            match = sp.pattern.search(response_text)
-            snippet = match.group(0)[:100] if match else ""
-            success_matches.append(f"{sp.description}: '{snippet}'")
-
-    # Check supporting patterns (non-decisive)
-    for sp in heuristic.supporting_patterns:
-        if sp.pattern and sp.pattern.search(response_text):
-            match = sp.pattern.search(response_text)
-            snippet = match.group(0)[:100] if match else ""
-            supporting_evidence.append(f"{sp.description}: '{snippet}'")
+            if sp.confidence > best_success["confidence"]:
+                match = sp.pattern.search(response_text)
+                snippet = match.group(0)[:100] if match else ""
+                best_success = {
+                    "confidence": sp.confidence,
+                    "evidence": f"{sp.description}: '{snippet}'",
+                    "matched": True,
+                }
 
     # Check failure patterns
     for fp in heuristic.failure_patterns:
         if fp.pattern and fp.pattern.search(response_text):
-            failure_matches.append(fp.description)
+            if fp.confidence > best_failure["confidence"]:
+                best_failure = {
+                    "confidence": fp.confidence,
+                    "evidence": fp.description,
+                    "matched": True,
+                }
 
     # XSS-specific: check payload reflection
     if heuristic.check_payload_reflection:
         reflection = _check_payload_reflection(entry)
-        if reflection:
-            success_matches.append(reflection["evidence"])
+        if reflection and reflection["confidence"] > best_success["confidence"]:
+            best_success = {
+                "confidence": reflection["confidence"],
+                "evidence": reflection["evidence"],
+                "matched": True,
+            }
 
-    # Time-based success (SQLi/CMDi)
-    time_evidence = _detect_time_based_success(entry, family)
-    if time_evidence:
-        success_matches.append(time_evidence)
-
-    # Determine final result (binary; conflicting indicators => failure)
-    if success_matches and not failure_matches:
-        evidence = success_matches[0]
-        if supporting_evidence:
-            evidence += f" | {supporting_evidence[0]}"
+    # Determine final result
+    if best_success["matched"] and best_failure["matched"]:
+        # Both matched - higher confidence wins
+        if best_success["confidence"] > best_failure["confidence"]:
+            final_confidence = best_success["confidence"] * 0.8  # Discount for conflicting signals
+            return {
+                "success": final_confidence >= 0.7,
+                "confidence": round(final_confidence, 2),
+                "evidence": best_success["evidence"],
+            }
+        else:
+            return {
+                "success": False,
+                "confidence": round(1.0 - best_failure["confidence"], 2),
+                "evidence": f"Attack likely failed: {best_failure['evidence']}",
+            }
+    elif best_success["matched"]:
         return {
-            "success": True,
-            "verdict": "success",
-            "evidence": evidence,
+            "success": best_success["confidence"] >= 0.7,
+            "confidence": round(best_success["confidence"], 2),
+            "evidence": best_success["evidence"],
         }
-    if failure_matches and not success_matches:
+    elif best_failure["matched"]:
         return {
             "success": False,
-            "verdict": "failure",
-            "evidence": f"Attack failed: {failure_matches[0]}",
+            "confidence": round(1.0 - best_failure["confidence"], 2),
+            "evidence": f"Attack likely failed: {best_failure['evidence']}",
         }
-    if success_matches and failure_matches:
+    else:
         return {
             "success": False,
-            "verdict": "conflict",
-            "evidence": "Conflicting success and failure indicators (treated as failure)",
+            "confidence": 0.0,
+            "evidence": "No success or failure indicators found",
         }
-    return {
-        "success": False,
-        "verdict": "none",
-        "evidence": "No success or failure indicators found",
-    }
 
 
 if __name__ == "__main__":
@@ -793,7 +853,7 @@ if __name__ == "__main__":
 
         url = tc["entry"]["request"]["url"][:40]
         print(f"  [{status}] {tc['family']:18} {url:<40}")
-        print(f"         success={result['success']}, evidence={result['evidence'][:60]}")
+        print(f"         success={result['success']}, confidence={result['confidence']}, evidence={result['evidence'][:60]}")
 
     print("=" * 60)
     print(f"Results: {passed} passed, {failed} failed, {len(test_cases)} total")

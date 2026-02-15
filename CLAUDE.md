@@ -390,7 +390,6 @@ results/{session}/analysis/
 | `bentoml` | `bentoml-vulnerable:1.4.2` (로컬 빌드) | 3000 | RCE (CVE-2025-27520), SSRF |
 | `mlflow` | `mlflow-vulnerable:2.9.2` (로컬 빌드) | 5000 | RCE, Path Traversal, SSRF |
 | `gradio` | `gradio-vulnerable:4.19.0` (로컬 빌드) | 7860 | Path Traversal, File Access |
-| `bias-lab` | `bias-lab:latest` (로컬 빌드) | 8000 | 10-technique balanced lab |
 
 ### 커스텀 이미지
 ```bash

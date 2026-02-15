@@ -69,19 +69,6 @@ except ImportError:
     from attack_taxonomy import ATTACK_FAMILIES, create_attack_label
     from response_heuristics import evaluate_response
 
-ALLOWED_FAMILIES = {
-    "sqli",
-    "xss",
-    "idor",
-    "auth_bypass",
-    "path_traversal",
-    "ssrf",
-    "cmdi",
-    "csrf",
-    "file_upload",
-    "info_disclosure",
-}
-
 
 def extract_searchable_text(entry: dict) -> str:
     """
@@ -161,12 +148,12 @@ def classify_entry(entry: dict, verbose: bool = False) -> dict:
     # Evaluate response for attack success
     if attack_label["family"] != "others":
         success_result = evaluate_response(entry, attack_label["family"])
-        attack_label["success"] = 1 if success_result["success"] else 0
-        attack_label["success_verdict"] = success_result.get("verdict", "none")
+        attack_label["success"] = success_result["success"]
+        attack_label["success_confidence"] = success_result["confidence"]
         attack_label["success_evidence"] = success_result["evidence"]
     else:
-        attack_label["success"] = 0
-        attack_label["success_verdict"] = "none"
+        attack_label["success"] = False
+        attack_label["success_confidence"] = 0.0
         attack_label["success_evidence"] = ""
 
     # Add to entry
@@ -227,8 +214,7 @@ def process_jsonl_file(
 
                     # Update stats
                     family = classified["attack_label"]["family"]
-                    stats_family = family if family in ALLOWED_FAMILIES else "others"
-                    stats["by_family"][stats_family] += 1
+                    stats["by_family"][family] += 1
                     stats["classified_entries"] += 1
 
                     # Track severity
@@ -338,10 +324,9 @@ def print_stats(stats: dict, detailed: bool = False):
         print("-" * 40)
 
         # Sort by count descending
-        filtered = {k: v for k, v in by_family.items() if k in ALLOWED_FAMILIES}
-        sorted_families = sorted(filtered.items(), key=lambda x: x[1], reverse=True)
+        sorted_families = sorted(by_family.items(), key=lambda x: x[1], reverse=True)
 
-        total = sum(filtered.values())
+        total = sum(by_family.values())
         for family, count in sorted_families:
             pct = (count / total * 100) if total > 0 else 0
             family_info = ATTACK_FAMILIES.get(family)
@@ -349,10 +334,6 @@ def print_stats(stats: dict, detailed: bool = False):
             capec = family_info.capec_id if family_info else "-"
 
             print(f"  {family:20} {count:6} ({pct:5.1f}%)  [{severity:8}]  {capec}")
-
-        unclassified = stats.get("total_entries", 0) - sum(filtered.values())
-        if unclassified > 0:
-            print(f"  {'unclassified':20} {unclassified:6} ({(unclassified / stats.get('total_entries', 1) * 100):5.1f}%)")
 
     # By agent (if available)
     by_agent = stats.get("by_agent", {})
@@ -372,40 +353,35 @@ def print_stats(stats: dict, detailed: bool = False):
 
 def generate_summary_json(stats: dict, output_path: Path):
     """Generate a JSON summary file."""
-    allowed_distribution = {
-        k: v for k, v in stats.get("by_family", {}).items() if k in ALLOWED_FAMILIES
-    }
-    total_requests = stats.get("total_entries", 0)
-    allowed_count = sum(allowed_distribution.values())
-    non_attack_count = total_requests - allowed_count
     summary = {
-        "total_requests": total_requests,
-        "attack_distribution": allowed_distribution,
+        "total_requests": stats.get("total_entries", 0),
+        "attack_distribution": dict(stats.get("by_family", {})),
         "by_agent": {},
     }
 
     # Calculate attack vs benign ratio
-    summary["attack_requests"] = allowed_count
-    summary["non_attack_requests"] = non_attack_count
-    summary["attack_ratio"] = round(allowed_count / total_requests, 4) if total_requests > 0 else 0
-    summary["non_attack_ratio"] = round(non_attack_count / total_requests, 4) if total_requests > 0 else 0
+    by_family = stats.get("by_family", {})
+    total = sum(by_family.values())
+    others_count = by_family.get("others", 0)
+    attack_count = total - others_count
+
+    summary["attack_requests"] = attack_count
+    summary["benign_requests"] = others_count
+    summary["attack_ratio"] = round(attack_count / total, 4) if total > 0 else 0
 
     # Add per-agent breakdown
     for agent, agent_stats in stats.get("by_agent", {}).items():
         agent_families = agent_stats.get("by_family", {})
         agent_total = sum(agent_families.values())
-        agent_attacks = sum(
-            count for fam, count in agent_families.items() if fam in ALLOWED_FAMILIES
-        )
-        agent_non_attack = agent_total - agent_attacks
+        agent_others = agent_families.get("others", 0)
+        agent_attacks = agent_total - agent_others
 
         summary["by_agent"][agent] = {
             "total_requests": agent_total,
             "attack_requests": agent_attacks,
-            "non_attack_requests": agent_non_attack,
+            "benign_requests": agent_others,
             "attack_ratio": round(agent_attacks / agent_total, 4) if agent_total > 0 else 0,
-            "non_attack_ratio": round(agent_non_attack / agent_total, 4) if agent_total > 0 else 0,
-            "distribution": {k: v for k, v in agent_families.items() if k in ALLOWED_FAMILIES},
+            "distribution": dict(agent_families),
         }
 
     # Write summary

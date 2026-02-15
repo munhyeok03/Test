@@ -64,7 +64,7 @@ ${YELLOW}Agent Selection (at least one required):${NC}
 
 ${YELLOW}Options:${NC}
   --victim <type|image>     Victim server (default: juice-shop)
-                            Presets: juice-shop, webgoat, vuln-shop, bentoml, mlflow, gradio, bias-lab
+                            Presets: juice-shop, webgoat, vuln-shop, bentoml, mlflow, gradio
                             Or any Docker image tag (e.g., nginx:latest, myapp:v1)
   --victim-port <port>      Port for custom victim image (default: 3000)
   --victim-healthcheck <url> Healthcheck URL for custom image
@@ -324,18 +324,6 @@ configure_victim() {
                 docker build -t gradio-vulnerable:4.19.0 ./victims/gradio
             fi
             ;;
-        bias-lab)
-            # Bias Market (Bias-Lab) - intentionally vulnerable storefront demo
-            export VICTIM_IMAGE="bias-lab-vulnerable:latest"
-            export VICTIM_PORT="8000"
-            export VICTIM_HEALTHCHECK="http://localhost:8000/health"
-            export VICTIM_APP_ROOT="/app"
-            # Build bias-lab victim image if not exists
-            if [[ "$BUILD_IMAGES" == "true" ]] || ! docker images | grep -q "bias-lab-vulnerable"; then
-                log_info "Building bias-lab-vulnerable image from ./victims/bias-lab..."
-                docker build -t bias-lab-vulnerable:latest ./victims/bias-lab
-            fi
-            ;;
         *)
             # Custom Docker image
             export VICTIM_IMAGE="$VICTIM_TYPE"
@@ -445,7 +433,7 @@ print(json.dumps(result, indent=2))
                     > "./${SESSION_DIR}/analysis/${agent}_challenges.json"
             fi
             ;;
-        bentoml|mlflow|gradio|bias-lab)
+        bentoml|mlflow|gradio)
             # Log-based verification (done later via vulnerability_verifier.py)
             log_info "[$agent] Log-based verification will be done in analysis phase"
             ;;
@@ -926,10 +914,7 @@ try:
     total = d.get('total_requests', 0)
     attacks = d.get('attack_requests', 0)
     ratio = d.get('attack_ratio', 0)
-    non_attack = d.get('non_attack_requests', 0)
     print(f'  Total requests: {total}, Attack requests: {attacks} ({ratio*100:.1f}%)')
-    if non_attack:
-        print(f'  Unclassified (exploration/other): {non_attack}')
     dist = d.get('attack_distribution', {})
     for family, count in sorted(dist.items(), key=lambda x: -x[1]):
         if family != 'others' and count > 0:
@@ -983,16 +968,12 @@ try:
     for agent, data in d.get('by_agent', {}).items():
         total = data.get('total_attack_requests', 0)
         success = data.get('successful_attacks', 0)
-        asr_macro = data.get('overall_asr_macro', data.get('overall_asr', 0))
-        asr_micro = data.get('overall_asr_micro', data.get('overall_asr', 0))
-        print(f'  {agent}: {success}/{total} attacks succeeded (ASR macro: {asr_macro*100:.1f}%, micro: {asr_micro*100:.1f}%)')
+        asr = data.get('overall_asr', 0)
+        print(f'  {agent}: {success}/{total} attacks succeeded (ASR: {asr*100:.1f}%)')
         by_family = data.get('by_family', {})
-        for family, fdata in sorted(by_family.items(), key=lambda x: (-x[1].get('binary_success', 0), -x[1].get('request_asr', 0))):
+        for family, fdata in sorted(by_family.items(), key=lambda x: -x[1].get('asr', 0)):
             if fdata.get('attempted', 0) > 0:
-                req_asr = fdata.get(\"request_asr\", 0) * 100
-                conflicts = fdata.get(\"conflicts\", 0)
-                conflict_note = f\", conflicts: {conflicts}\" if conflicts else \"\"
-                print(f'    {family}: success={fdata.get(\"binary_success\", 0)} ({fdata[\"succeeded\"]}/{fdata[\"attempted\"]}, request ASR: {req_asr:.1f}%){conflict_note}')
+                print(f'    {family}: {fdata[\"succeeded\"]}/{fdata[\"attempted\"]} (ASR: {fdata[\"asr\"]*100:.1f}%)')
         by_cve = data.get('by_cve', {})
         if by_cve:
             cve_success = sum(1 for v in by_cve.values() if v.get('succeeded'))
