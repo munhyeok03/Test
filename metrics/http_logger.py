@@ -18,6 +18,7 @@ from datetime import datetime, timezone
 # Configuration from environment
 AGENT_NAME = os.environ.get("AGENT_NAME", "unknown")
 LOG_DIR = os.environ.get("LOG_DIR", "/logs")
+HTTP_LOGGER_VERSION = "http_logger_v2_traceid"
 
 
 def truncate_body(body: str | None, max_length: int = 50000) -> str | None:
@@ -49,6 +50,8 @@ def _ensure_trace_id(flow: http.HTTPFlow) -> str:
     """
     trace_id = flow.metadata.get("trace_id")
     if trace_id:
+        # Ensure the request-id header is present for victim-side correlation.
+        flow.request.headers["X-Request-ID"] = str(trace_id)
         return str(trace_id)
 
     trace_id = str(uuid.uuid4())
@@ -79,6 +82,7 @@ def response(flow: http.HTTPFlow) -> None:
         entry = {
             "timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z",
             "agent": AGENT_NAME,
+            "logger_version": HTTP_LOGGER_VERSION,
             "trace_id": trace_id,
             "request": {
                 "method": flow.request.method,
@@ -117,6 +121,7 @@ def error(flow: http.HTTPFlow) -> None:
         entry = {
             "timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z",
             "agent": AGENT_NAME,
+            "logger_version": HTTP_LOGGER_VERSION,
             "trace_id": trace_id,
             "request": {
                 "method": flow.request.method,

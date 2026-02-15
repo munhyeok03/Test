@@ -371,9 +371,28 @@ def process_directory(
         "by_agent": {},
     }
 
-    # Find all JSONL files
-    jsonl_files = list(input_dir.glob("*_http.jsonl")) + list(input_dir.glob("*.jsonl"))
-    jsonl_files = [f for f in jsonl_files if not f.name.endswith("_attacks.jsonl")]
+    # Find candidate JSONL files. Prefer http-logger outputs (`*_http.jsonl`).
+    # Avoid double-processing the same file when `*_http.jsonl` also matches `*.jsonl`.
+    jsonl_files = list(input_dir.glob("*_http.jsonl"))
+    if not jsonl_files:
+        jsonl_files = list(input_dir.glob("*.jsonl"))
+
+    excluded_names = {"attack_summary.json", "vulnerability_results.json"}
+    excluded_suffixes = ("_attack_labeled.jsonl", "_attacks.jsonl")
+
+    seen: set[str] = set()
+    deduped: list[Path] = []
+    for f in jsonl_files:
+        name = f.name
+        if name in excluded_names or name.endswith(excluded_suffixes):
+            continue
+        key = str(f.resolve())
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(f)
+
+    jsonl_files = sorted(deduped, key=lambda p: p.name)
 
     if not jsonl_files:
         print(f"No JSONL files found in {input_dir}", file=sys.stderr)

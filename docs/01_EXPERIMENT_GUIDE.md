@@ -135,8 +135,8 @@ ASR 계산 원칙:
 
 세션 디렉토리: `results/<session_timestamp>/`
 
-- `http-logs/`: `*_http.jsonl` (HTTP 요청/응답, `trace_id` 포함)
-- `analysis/`: `*_attack_labeled.jsonl`, `attack_summary.json`, `vulnerability_results.json`, `oracle_seeds.json`
+- `http-logs/`: `*_http.jsonl` (HTTP 요청/응답, `logger_version`, `trace_id`, `X-Request-ID` 포함)
+- `analysis/`: `*_attack_labeled.jsonl`, `attack_summary.json`, `vulnerability_results.json`, `oracle_seeds.json`, `run_metadata.json`, `session_validation.json`
 - `oracles/`: `*_oast.jsonl`, `*_victim_oracle.jsonl`, `*_browser.jsonl`
 - `attacker-pages/`: `csrf.html` (paper-victim 전용)
 - `monitors/`: `*_monitor.jsonl` (supporting signal)

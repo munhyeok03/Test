@@ -24,16 +24,16 @@
 - `.gitignore`: `victims/` 무시 규칙 제거(피해자 구성 파일 추적 가능하게 함), `metrics/__pycache__/`, `*.pyc` 등 파생 산출물 무시 추가(측정 코드와 산출물 분리)
 - `docker-compose.yml`: victim-only 네트워크 분리(측정 무결성), OAST oracle 서비스 추가, victim 포트 host-only 바인딩(에이전트 우회 접근 방지)
 - `agents/scripts/entrypoint.sh`: OAST(Out-of-Band) oracle 제공 사실을 프롬프트에 명시(블라인드 SSRF 등 객관적 검증을 위한 도구 제공)
-- `metrics/http_logger.py`: 모든 HTTP 요청에 `trace_id` 부여 및 `X-Request-ID` 헤더 주입(로그 상관/추적용), 로그에 `trace_id` 저장
+- `metrics/http_logger.py`: 모든 HTTP 요청에 `trace_id` 부여 및 `X-Request-ID` 헤더 주입(로그 상관/추적용), 로그에 `trace_id` 저장 + `logger_version` 기록
 - `metrics/oast_server.py` (추가): OAST callback 서버(상호작용 ID 기반, time-window 없이 블라인드 SSRF 등 성공 확인)
 - `metrics/Dockerfile.oast` (추가): OAST 서버 이미지 빌드 정의
 - `metrics/browser_harness.py` (추가): victim-private 네트워크에서 동작하는 headless 브라우저 하네스(Stored XSS/CSRF/업로드 후 클라이언트 실행 컨텍스트 제공)
 - `metrics/Dockerfile.browser` (추가): 브라우저 하네스 이미지 빌드 정의(Playwright 기반)
-- `run.sh`: oracle seed(`ORACLE_TOKEN_*`) 생성 및 기록(`analysis/oracle_seeds.json`), `results/<session>/oracles/` 디렉토리 추가, OAST 서비스 기동, `verify_success.py`에 `--oracle-logs` 전달
+- `run.sh`: oracle seed(`ORACLE_TOKEN_*`) 생성 및 기록(`analysis/oracle_seeds.json`), `results/<session>/oracles/` 디렉토리 추가, OAST 서비스 기동, `verify_success.py`에 `--oracle-logs` 전달 + 실행 재현을 위한 `analysis/run_metadata.json` 및 산출물 무결성 점검 리포트 `analysis/session_validation.json` 생성
 - `scripts/ATTACK_CLASSIFICATION.md`: 분류/성공판정 방법론 문서 업데이트(oracle 우선, `context_required` 범위 확장, monitor 역할 재정의)
 - `scripts/attack_taxonomy.py`: 10개 in-scope family 고정(`TARGET_ATTACK_FAMILIES`, `is_target_family()`), out-of-scope family 제거
 - `scripts/crs_patterns.py`: CRS anomaly scoring 기반 요청 분류(임계치=5) 유지하되 out-of-scope family 제거 및 보조 휴리스틱 메타데이터 제거
-- `scripts/classify_attacks.py`: CSRF 등 일부 패턴이 HTTP method/헤더를 필요로 하므로, searchable text에 `METHOD PATH` 및 핵심 헤더(`Origin`, `Referer` 등)를 포함하도록 수정. `paper-victim`에서는 benchmark-style endpoint mapping(`--victim-type paper-victim`)으로 ground truth family 라벨링 적용
+- `scripts/classify_attacks.py`: CSRF 등 일부 패턴이 HTTP method/헤더를 필요로 하므로, searchable text에 `METHOD PATH` 및 핵심 헤더(`Origin`, `Referer` 등)를 포함하도록 수정. 입력 디렉토리 처리 시 파일 중복 glob으로 인한 이중 집계(예: `*_http.jsonl`가 `*.jsonl`에도 매칭)를 제거. `paper-victim`에서는 benchmark-style endpoint mapping(`--victim-type paper-victim`)으로 ground truth family 라벨링 적용
 - `scripts/response_heuristics.py`: WSTG 근거로 `context_required` family 확장(HTTP pair만으로 확증 불가한 항목의 자동 확증 금지)
 - `scripts/verify_success.py`: monitor 기반 성공 승격 제거(요청 단위 귀속 불가), oracle(canary/OAST/victim oracle event) 우선 검증 + response artifact fallback
 - `victims/gradio/Dockerfile`, `victims/gradio/start.sh` (변경/추가): ORACLE token 기반 canary 파일 런타임 시딩(정적 문자열 제거)

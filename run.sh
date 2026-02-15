@@ -720,6 +720,53 @@ EOF
     mkdir -p metrics/logs                # Global LiteLLM proxy logs
 
     # -------------------------------------------------------------------
+    # Run metadata (reproducibility)
+    # -------------------------------------------------------------------
+    export RUN_AGENTS_CSV
+    RUN_AGENTS_CSV=$(IFS=,; echo "${AGENTS[*]}")
+    python3 - << 'PYEOF' "./${SESSION_DIR}/analysis/run_metadata.json" || true
+import json
+import os
+import platform
+import subprocess
+import sys
+from datetime import datetime, timezone
+
+out = sys.argv[1]
+
+def _cmd(args):
+    try:
+        return subprocess.check_output(args, stderr=subprocess.DEVNULL, text=True).strip()
+    except Exception:
+        return ""
+
+meta = {
+    "generated_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z",
+    "session_timestamp": os.getenv("SESSION_TIMESTAMP") or "",
+    "victim_type": os.getenv("VICTIM_TYPE") or "",
+    "agents": [a for a in (os.getenv("RUN_AGENTS_CSV") or "").split(",") if a],
+    "repo": {
+        "path": os.getcwd(),
+        "commit": _cmd(["git", "rev-parse", "HEAD"]),
+        "describe": _cmd(["git", "describe", "--always", "--dirty"]),
+        "origin": _cmd(["git", "config", "--get", "remote.origin.url"]),
+        "upstream": _cmd(["git", "config", "--get", "remote.upstream.url"]),
+        "dirty": bool(_cmd(["git", "status", "--porcelain"])),
+    },
+    "tooling": {
+        "python": sys.version.splitlines()[0],
+        "platform": platform.platform(),
+        "docker": _cmd(["docker", "--version"]),
+        "docker_compose": _cmd(["docker", "compose", "version"]),
+    },
+}
+
+os.makedirs(os.path.dirname(out), exist_ok=True)
+with open(out, "w", encoding="utf-8") as f:
+    json.dump(meta, f, indent=2, ensure_ascii=False)
+PYEOF
+
+    # -------------------------------------------------------------------
     # Ground-truth oracle seed (paper-grade, non-heuristic evidence)
     # -------------------------------------------------------------------
     # A per-agent secret token is injected into victims (as canary artifacts)
@@ -1003,6 +1050,90 @@ PYEOF
     else
         log_warn "verify_success.py not found, skipping ASR verification"
     fi
+
+    # Validate session artifacts (quick integrity checks; no decision heuristics).
+    log_step "Validating session artifacts..."
+    python3 - << 'PYEOF' "./${SESSION_DIR}" 2>/dev/null || true
+import json
+import sys
+from pathlib import Path
+
+session_dir = Path(sys.argv[1])
+http_dir = session_dir / "http-logs"
+analysis_dir = session_dir / "analysis"
+
+report = {
+    "http_logs": {},
+    "attack_summary": {},
+    "vulnerability_results": {},
+}
+
+# 1) http-logger trace id / request-id presence (for oracle correlation)
+for p in sorted(http_dir.glob("*_http.jsonl")):
+    agent = p.stem.replace("_http", "")
+    has_trace_id = 0
+    has_xrid = 0
+    has_logger_version = 0
+    total = 0
+    try:
+        with p.open("r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                total += 1
+                e = json.loads(line)
+                if e.get("trace_id"):
+                    has_trace_id += 1
+                if e.get("logger_version"):
+                    has_logger_version += 1
+                h = ((e.get("request") or {}).get("headers") or {})
+                if ("X-Request-ID" in h) or ("X-Request-Id" in h):
+                    has_xrid += 1
+                if total >= 20:
+                    break
+    except Exception:
+        pass
+    report["http_logs"][agent] = {
+        "sampled": total,
+        "with_trace_id": has_trace_id,
+        "with_x_request_id_header": has_xrid,
+        "with_logger_version": has_logger_version,
+    }
+
+# 2) attack_summary consistency (avoid double-processing bugs)
+summary_path = analysis_dir / "attack_summary.json"
+if summary_path.exists():
+    try:
+        d = json.loads(summary_path.read_text(encoding="utf-8"))
+        total = int(d.get("total_requests") or 0)
+        by_agent = d.get("by_agent") or {}
+        total_by_agents = sum(int((by_agent.get(a) or {}).get("total_requests") or 0) for a in by_agent.keys())
+        report["attack_summary"] = {
+            "total_requests": total,
+            "sum_by_agent_total_requests": total_by_agents,
+            "consistent": (total == total_by_agents) if by_agent else True,
+        }
+    except Exception:
+        report["attack_summary"] = {"error": "failed_to_parse"}
+
+# 3) vulnerability_results structure (oracle summary should be present)
+vr_path = analysis_dir / "vulnerability_results.json"
+if vr_path.exists():
+    try:
+        d = json.loads(vr_path.read_text(encoding="utf-8"))
+        by_agent = d.get("by_agent") or {}
+        report["vulnerability_results"] = {
+            "agents": sorted(list(by_agent.keys())),
+            "oracle_keys_present": {a: ("oracle" in (by_agent.get(a) or {})) for a in by_agent.keys()},
+        }
+    except Exception:
+        report["vulnerability_results"] = {"error": "failed_to_parse"}
+
+out_path = analysis_dir / "session_validation.json"
+out_path.write_text(json.dumps(report, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+print(f"[validation] wrote {out_path}")
+PYEOF
 
     # Cleanup
     if [[ "$KEEP_CONTAINERS" == "false" ]]; then
